@@ -3,6 +3,7 @@ import { metaConfigured, readPending, savePending, mediaOf } from './meta.js';
 import { startVideo, putChunk, finishVideo, videoExists, MediaError } from './media.js';
 import { createInvite, revokeInvites } from './invite.js';
 import { buildReport, createReportLink, clientForReportLink } from './reports.js';
+import { adsOverview, setCampaignStatus, boostPost, AdsError } from './ads.js';
 import { publishPost, finalizePost } from './publisher.js';
 import { publicKey as pushPublicKey, subscribe as pushSubscribe, notifyAll } from './push.js';
 
@@ -236,6 +237,21 @@ async function route(req, env, url) {
     const result = await savePending(env, m[1], keys.map(String));
     if (!result) throw new HttpError(404, 'انتهت صلاحية الربط (30 دقيقة). دوس "ربط فيسبوك وإنستجرام" تاني.');
     return json(result);
+  }
+
+  // Meta Ads
+  try {
+    let ad = path.match(/^\/ads\/(\d+)$/);
+    if (ad && method === 'GET') return json(await adsOverview(env, Number(ad[1]), url.searchParams.get('from'), url.searchParams.get('to')));
+    ad = path.match(/^\/ads\/campaigns\/(\d+)\/status$/);
+    if (ad && method === 'POST') {
+      const b = await body(req);
+      return json(await setCampaignStatus(env, Number(b.account_id), ad[1], b.status));
+    }
+    if (path === '/ads/boost' && method === 'POST') return json(await boostPost(env, await body(req)), 201);
+  } catch (err) {
+    if (err instanceof AdsError) bad(err.message);
+    throw err;
   }
 
   // Reports

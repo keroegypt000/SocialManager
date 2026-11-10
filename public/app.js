@@ -17,7 +17,9 @@ const STATUS = {
   pending: 'منتظر',
   processing: 'إنستجرام بيجهّز الفيديو',
 };
-const PLATFORM = { facebook: 'فيسبوك', instagram: 'إنستجرام', whatsapp: 'حالة واتساب' };
+const PLATFORM = { facebook: 'فيسبوك', instagram: 'إنستجرام', whatsapp: 'حالة واتساب', meta_ads: 'إعلانات Meta' };
+// Account types you can't post to (they don't show in the composer).
+const NON_POSTING = ['meta_ads'];
 
 const fmtDate = (ms) => ms ? new Date(ms).toLocaleString('ar-EG', { dateStyle: 'medium', timeStyle: 'short' }) : '';
 
@@ -159,6 +161,7 @@ const routes = {
   connect: renderConnect,
   whatsapp: renderWhatsApp,
   reports: renderReports,
+  ads: renderAds,
 };
 
 let me = null;
@@ -207,6 +210,7 @@ function shell(active) {
             <a href="#/calendar" data-r="calendar">التقويم</a>
             <a href="#/posts" data-r="posts">المنشورات</a>
             <a href="#/reports" data-r="reports">📊 التقارير</a>
+            <a href="#/ads" data-r="ads">📢 الإعلانات</a>
             <a href="#/whatsapp" data-r="whatsapp">📱 حالات واتساب <span class="nav-badge" id="wa-badge" hidden></span></a>
             <a href="#/clients" data-r="clients">العملاء والحسابات</a>
           </nav>
@@ -320,6 +324,7 @@ function postRow(p, { actions = true } = {}) {
         ${editable ? `<button class="btn small" data-act="publish">${p.status === 'failed' || p.status === 'partial' ? 'إعادة المحاولة' : 'انشر دلوقتي'}</button>` : ''}
         ${editable ? `<a class="btn small" href="#/compose?edit=${p.id}">تعديل</a>` : ''}
         <a class="btn small" href="#/compose?copy=${p.id}" title="انسخ المنشور لميعاد أو مواعيد تانية">نسخ / تكرار</a>
+        ${p.targets.some((t) => t.platform === 'facebook' && t.status === 'published') ? '<button class="btn small" data-act="boost" title="اعمل إعلان ممول للمنشور ده">📢 روّج</button>' : ''}
         <button class="btn small danger" data-act="delete">حذف</button>
         ${p.series_id ? '<button class="btn small danger" data-act="delete-series" title="يحذف كل المنشورات الجاية في السلسلة دي">حذف السلسلة الجاية</button>' : ''}
       </div>` : ''}
@@ -331,6 +336,10 @@ function bindPostActions(root, reload) {
     btn.onclick = async () => {
       const row = btn.closest('.post');
       const id = row.dataset.id;
+      if (btn.dataset.act === 'boost') {
+        openBoostDialog(await api(`/posts/${id}`)).catch((err) => toast(err.message));
+        return;
+      }
       if (btn.dataset.act === 'delete') {
         if (!(await askConfirm('متأكد إنك عايز تحذف المنشور ده من المنصة؟ (مش هيتمسح من فيسبوك أو إنستجرام لو كان اتنشر)'))) return;
         await api(`/posts/${id}`, { method: 'DELETE' });
@@ -510,6 +519,7 @@ async function renderConnect(main, params) {
     <form class="card" id="connect-form">
       <div class="account-picks">
         ${pages.map((p) => row(p) + igFor(p.page_id).map((ig) => `<div style="margin-inline-start:28px">${row(ig)}</div>`).join('')).join('')}
+        ${data.items.filter((i) => i.platform === 'meta_ads').map((ad) => row(ad)).join('')}
       </div>
       <div id="c-err" class="notice bad" hidden style="margin-top:14px"></div>
       <div style="display:flex;gap:8px;margin-top:16px">
@@ -718,7 +728,7 @@ async function renderCompose(main, params) {
 
   const renderPlatforms = () => {
     const count = (p) => accounts.filter((a) => a.platform === p).length;
-    const chips = [['all', `🌐 الكل (${accounts.length})`], ...Object.keys(PLATFORM).map((p) => [p, `${PLATFORM[p]} (${count(p)})`])];
+    const chips = [['all', `🌐 الكل (${accounts.length})`], ...Object.keys(PLATFORM).filter((p) => !NON_POSTING.includes(p)).map((p) => [p, `${PLATFORM[p]} (${count(p)})`])];
     $('#p-platforms').innerHTML = chips.map(([v, label]) =>
       `<label class="${v !== 'all' ? `pf-${v}` : ''}"><input type="radio" name="platform" value="${v}" ${v === platformChoice ? 'checked' : ''}> ${esc(label)}</label>`).join('');
     $('#p-platforms').querySelectorAll('input').forEach((r) => {
@@ -755,7 +765,7 @@ async function renderCompose(main, params) {
 
   async function loadAccounts() {
     $('#p-accounts').innerHTML = '<span class="muted small">جاري التحميل…</span>';
-    accounts = await api(`/accounts?client_id=${clientSel.value}`);
+    accounts = (await api(`/accounts?client_id=${clientSel.value}`)).filter((a) => !NON_POSTING.includes(a.platform));
     renderPlatforms();
     renderAccountList();
   }
@@ -1341,6 +1351,9 @@ function reportHtml(r) {
         ${kpi('منشورات اتنشرت من المنصة', r.platform?.published)}
         ${r.platform?.whatsapp ? kpi('حالات واتساب', r.platform.whatsapp) : ''}
       </div>
+      ${(r.ads || []).filter((a) => a.totals || a.error).map((a) => `<section class="card report-acc">
+        <div class="acc-head">${platformTag('meta_ads')} <h2>${esc(a.name)}</h2></div>
+        ${a.error ? `<p class="muted small">${esc(a.error)}</p>` : adsTotalsHtml(a.totals, a.currency)}</section>`).join('')}
       ${accs.length ? accs.map(section).join('') : '<div class="card empty">العميل ده مفيش عنده حسابات فيسبوك أو إنستجرام مربوطة.</div>'}
       ${anyErrors ? `<details class="card no-print report-errors"><summary>⚠️ بعض الأرقام مش ظاهرة، دوس عشان تعرف السبب</summary>
         <p class="small">غالباً الصلاحية <code>read_insights</code> (فيسبوك) أو <code>instagram_manage_insights</code> (إنستجرام) مش متضافة، أو الحساب محتاج يتربط تاني بعد إضافتها. وإنستجرام مش بيدّي عدد المتابعين الجداد للحسابات اللي أقل من 100 متابع.</p>
@@ -1435,6 +1448,167 @@ async function renderPublicReport(token, params) {
   } catch (err) {
     $('#pr-body').innerHTML = `<div class="notice bad">${esc(err.message)}</div>`;
   }
+}
+
+// ---------- Meta Ads ----------
+const OBJECTIVES = {
+  OUTCOME_ENGAGEMENT: 'تفاعل', OUTCOME_AWARENESS: 'وعي بالعلامة', OUTCOME_TRAFFIC: 'زيارات', OUTCOME_LEADS: 'عملاء محتملين',
+  OUTCOME_SALES: 'مبيعات', OUTCOME_APP_PROMOTION: 'تطبيقات', MESSAGES: 'رسائل', POST_ENGAGEMENT: 'تفاعل', LINK_CLICKS: 'زيارات',
+};
+const RESULT_LABEL = {
+  'onsite_conversion.messaging_conversation_started_7d': 'محادثة', lead: 'عميل محتمل', 'offsite_conversion.fb_pixel_purchase': 'شراء',
+  purchase: 'شراء', link_click: 'نقرة', post_engagement: 'تفاعل', page_engagement: 'تفاعل',
+};
+const money = (v, cur) => (v == null ? '—' : `${Number(v).toLocaleString('ar-EG', { maximumFractionDigits: 2 })} ${cur || ''}`);
+const budgetText = (c, cur) => {
+  const minorDiv = ['JPY', 'KRW', 'CLP', 'COP', 'CRC', 'HUF', 'ISK', 'IDR', 'PYG', 'TWD', 'VND'].includes(cur) ? 1 : 100;
+  if (c.daily_budget) return `${money(c.daily_budget / minorDiv, cur)} / يوم`;
+  if (c.lifetime_budget) return `${money(c.lifetime_budget / minorDiv, cur)} إجمالي`;
+  return 'على مستوى المجموعة';
+};
+
+function adsTotalsHtml(t, cur) {
+  if (!t) return '';
+  return `<div class="kpis">
+    ${kpi('المصروف', null).replace('—', money(t.spend, cur))}
+    ${kpi('الظهور', t.impressions)}
+    ${kpi('الوصول', t.reach)}
+    ${kpi('النقرات', t.clicks, t.ctr != null ? `<div class="kpi-change">CTR ${Number(t.ctr).toFixed(2)}%</div>` : '')}
+    ${kpi('تكلفة النقرة', null).replace('—', money(t.cpc, cur))}
+    ${t.result ? kpi(`النتايج (${RESULT_LABEL[t.result.type] || t.result.type})`, t.result.value) : ''}
+  </div>`;
+}
+
+async function renderAds(main, params) {
+  const clients = await loadClients();
+  if (!clients.length) {
+    main.innerHTML = '<div class="page-head"><h1>📢 الإعلانات</h1></div><div class="card empty">ضيف عميل الأول.</div>';
+    return;
+  }
+  const clientId = params.get('client') || clients[0].id;
+  const rangeKey = params.get('range') || '30';
+  main.innerHTML = `
+    <div class="page-head"><h1>📢 الإعلانات</h1>
+      <a class="btn" href="https://adsmanager.facebook.com/" target="_blank" rel="noopener">فتح مدير الإعلانات ↗</a></div>
+    <div class="row" style="margin-bottom:16px">
+      <div><label for="a-client">العميل</label>
+        <select id="a-client">${clients.map((c) => `<option value="${c.id}" ${String(c.id) === String(clientId) ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select></div>
+      <div><label for="a-range">الفترة</label>
+        <select id="a-range">${RANGES.map(([v, l]) => `<option value="${v}" ${v === rangeKey ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
+    </div>
+    <div id="a-body"><div class="boot">بيجيب الحملات من Meta…</div></div>`;
+  const go = () => { location.hash = `#/ads?client=${$('#a-client').value}&range=${$('#a-range').value}`; };
+  $('#a-client').onchange = go;
+  $('#a-range').onchange = go;
+
+  const [from, to] = rangeFor(rangeKey);
+  let list;
+  try {
+    list = await api(`/ads/${clientId}?from=${from}&to=${to}`);
+  } catch (err) {
+    $('#a-body').innerHTML = `<div class="notice bad">${esc(err.message)}</div>`;
+    return;
+  }
+  if (!list.length) {
+    $('#a-body').innerHTML = `<div class="card empty">العميل ده مفيش عنده حساب إعلانات مربوط.<br>
+      لما تربط فيسبوك (أو العميل يربط من لينك الدعوة)، علّم على <b>حساب الإعلانات</b> في قايمة الاختيار.<br>
+      <a class="btn primary small" style="margin-top:10px" href="#/clients">العملاء والحسابات</a></div>`;
+    return;
+  }
+  const statusBadge = (c) => {
+    const s = c.effective_status || c.status;
+    const map = { ACTIVE: ['شغالة', 'published'], PAUSED: ['متوقفة', ''], CAMPAIGN_PAUSED: ['متوقفة', ''], ARCHIVED: ['مؤرشفة', ''], IN_PROCESS: ['بتتراجع', 'scheduled'], WITH_ISSUES: ['فيها مشكلة', 'failed'] };
+    const [l, cls] = map[s] || [s, ''];
+    return `<span class="badge ${cls}">${esc(l)}</span>`;
+  };
+  $('#a-body').innerHTML = list.map((a) => `
+    <section class="card report-acc" data-acc="${a.id}">
+      <div class="acc-head">${platformTag('meta_ads')} <h2>${esc(a.name)}</h2></div>
+      ${a.error ? `<div class="notice bad">${esc(a.error)}</div>` : `
+      ${adsTotalsHtml(a.totals, a.currency)}
+      <h3>الحملات (${a.campaigns.length})</h3>
+      ${a.campaigns.length ? `<div class="table-wrap"><table class="table">
+        <thead><tr><th>الحملة</th><th>الحالة</th><th>الهدف</th><th>الميزانية</th><th>المصروف</th><th>الظهور</th><th>النقرات</th><th>النتايج</th><th></th></tr></thead>
+        <tbody>${a.campaigns.map((c) => `<tr>
+          <td><b>${esc(c.name)}</b></td>
+          <td>${statusBadge(c)}</td>
+          <td>${esc(OBJECTIVES[c.objective] || c.objective || '')}</td>
+          <td class="small">${esc(budgetText(c, a.currency))}</td>
+          <td>${money(c.spend, a.currency)}</td>
+          <td>${fmtNum(c.impressions)}</td>
+          <td>${fmtNum(c.clicks)}</td>
+          <td>${c.result ? `${fmtNum(c.result.value)} ${esc(RESULT_LABEL[c.result.type] || '')}` : '—'}</td>
+          <td>${c.status === 'ACTIVE'
+            ? `<button class="btn small" data-camp="${esc(c.id)}" data-to="PAUSED">⏸ وقّف</button>`
+            : c.status === 'PAUSED' ? `<button class="btn small primary" data-camp="${esc(c.id)}" data-to="ACTIVE">▶ شغّل</button>` : ''}</td>
+        </tr>`).join('')}</tbody></table></div>` : '<p class="muted small">مفيش حملات. تقدر تروّج أي منشور فيسبوك اتنشر من صفحة <a href="#/posts">المنشورات</a> بزرار 📢 روّج.</p>'}`}
+    </section>`).join('');
+
+  main.querySelectorAll('[data-camp]').forEach((b) => {
+    b.onclick = async () => {
+      const to = b.dataset.to;
+      const ok = await askConfirm(to === 'ACTIVE'
+        ? 'الحملة هتشتغل وهتبدأ تصرف من الميزانية بتاعتها. متأكد؟'
+        : 'الحملة هتقف ومش هتصرف لحد ما تشغّلها تاني.', { ok: to === 'ACTIVE' ? 'شغّلها' : 'وقّفها' });
+      if (!ok) return;
+      b.disabled = true;
+      try {
+        await api(`/ads/campaigns/${b.dataset.camp}/status`, { method: 'POST', body: { account_id: Number(b.closest('[data-acc]').dataset.acc), status: to } });
+        toast(to === 'ACTIVE' ? 'الحملة اشتغلت ▶' : 'الحملة وقفت ⏸');
+        renderAds(main, params);
+      } catch (err) {
+        toast(err.message);
+        b.disabled = false;
+      }
+    };
+  });
+}
+
+// "📢 روّج": promote a published Facebook post. Created paused; you turn it on from the ads page.
+async function openBoostDialog(post) {
+  const fbTarget = post.targets.find((t) => t.platform === 'facebook' && t.status === 'published');
+  const adAccounts = (await api(`/accounts?client_id=${post.client_id}`)).filter((a) => a.platform === 'meta_ads');
+  const dlg = document.createElement('dialog');
+  dlg.className = 'dialog';
+  dlg.innerHTML = `<form method="dialog" class="dlg-body">
+    <div class="dlg-head"><b>📢 روّج المنشور ده</b><button class="btn small dlg-close" value="close">✕</button></div>
+    <div class="dlg-text muted small">${esc((post.message || '').slice(0, 140))}</div>
+    ${!adAccounts.length ? `<div class="notice">العميل ده مفيش عنده حساب إعلانات مربوط. اربط فيسبوك تاني وعلّم على حساب الإعلانات.</div>` : `
+    <div class="field"><label>حساب الإعلانات</label><select name="acc">${adAccounts.map((a) => `<option value="${a.id}">${esc(a.name)}</option>`).join('')}</select></div>
+    <div class="row">
+      <div><label>الميزانية في اليوم</label><input name="budget" type="number" min="1" step="0.5" value="5" required></div>
+      <div><label>كام يوم</label><input name="days" type="number" min="1" max="90" value="7" required></div>
+    </div>
+    <div class="row">
+      <div><label>الدول (كود الدولة)</label><input name="countries" value="EG" dir="ltr" placeholder="EG, KW, SA"></div>
+      <div><label>السن من</label><input name="age_min" type="number" min="18" max="65" value="18"></div>
+      <div><label>لحد</label><input name="age_max" type="number" min="18" max="65" value="65"></div>
+    </div>
+    <div class="notice small" style="margin:0">🛑 الإعلان هيتعمل <b>متوقف</b>، ومش هيصرف حاجة لحد ما تشغّله من صفحة <b>📢 الإعلانات</b>. الميزانية بعملة حساب الإعلانات.</div>
+    <div id="b-err" class="notice bad" hidden></div>
+    <div class="dlg-actions" style="border:0;padding:0"><button type="button" class="btn primary" data-go>اعمل الإعلان</button></div>`}
+  </form>`;
+  document.body.appendChild(dlg);
+  dlg.addEventListener('close', () => dlg.remove());
+  dlg.querySelector('[data-go]')?.addEventListener('click', async (e) => {
+    const f = dlg.querySelector('form');
+    const v = (n) => f.elements[n].value;
+    e.target.disabled = true;
+    try {
+      await api('/ads/boost', { method: 'POST', body: {
+        account_id: Number(v('acc')), post_target_id: fbTarget.id, daily_budget: Number(v('budget')), days: Number(v('days')),
+        countries: v('countries'), age_min: Number(v('age_min')), age_max: Number(v('age_max')),
+      } });
+      dlg.close();
+      toast('اتعمل الإعلان ✅ (متوقف). شغّله من صفحة الإعلانات لما تكون جاهز');
+    } catch (err) {
+      const box = dlg.querySelector('#b-err');
+      box.textContent = err.message;
+      box.hidden = false;
+      e.target.disabled = false;
+    }
+  });
+  dlg.showModal();
 }
 
 // ---------- calendar ----------

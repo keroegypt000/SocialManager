@@ -366,3 +366,11 @@ a.top-post[href]:hover { border-color: var(--primary); }
   .report-acc { break-inside: auto; }
   a.top-post { text-decoration: none; }
 }
+
+/* Ads */
+.platform.meta_ads { background: #0866ff; }
+.table-wrap { overflow-x: auto; }
+.table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.table th, .table td { padding: 8px 10px; border-bottom: 1px solid var(--border); text-align: start; white-space: nowrap; }
+.table th { color: var(--muted); font-weight: 600; font-size: 13px; }
+.table td:first-child { white-space: normal; min-width: 160px; }

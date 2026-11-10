@@ -9,6 +9,7 @@
 // unavailable metric (or a missing permission) never breaks the whole report.
 import { decrypt } from './crypto.js';
 import { graph } from './meta.js';
+import { adsForReport } from './ads.js';
 
 const CACHE_MS = 6 * 3600 * 1000;
 const DAY = 86400000;
@@ -202,6 +203,7 @@ export async function buildReport(env, clientId, from, to, { refresh = false } =
     from, to, generated_at: Date.now(),
     accounts: sections,
     platform: await platformStats(env, clientId, from, to),
+    ads: await adsForReport(env, clientId, from, to),
   };
   await env.DB.prepare('INSERT OR REPLACE INTO report_cache (key, json, created_at) VALUES (?, ?, ?)')
     .bind(key, JSON.stringify(report), Date.now()).run();

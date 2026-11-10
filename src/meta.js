@@ -12,6 +12,8 @@ const SCOPES = [
   'business_management',
   'read_insights',
   'instagram_manage_insights',
+  'ads_read',
+  'ads_management',
 ];
 
 const version = (env) => env.META_GRAPH_VERSION || 'v23.0';
@@ -109,6 +111,14 @@ export async function metaCallback(env, url, { isAdmin = false } = {}) {
         picture: ig.profile_picture_url || null, token: page.access_token, page_id: page.id,
       });
     }
+  }
+  // Ad accounts the person can use (needs ads_read). They use the long-lived user token,
+  // which lasts about 60 days; reconnecting refreshes it.
+  const ads = await graph(env, 'me/adaccounts', {
+    params: { access_token: long.access_token, fields: 'id,name,account_status,currency', limit: '100' },
+  }).catch(() => null);
+  for (const ad of ads?.data || []) {
+    items.push({ platform: 'meta_ads', external_id: ad.id, name: `${ad.name || ad.id} (${ad.currency || ''})`.trim(), picture: null, token: long.access_token, page_id: null });
   }
   if (!items.length) return back(invite ? 'error=' + encodeURIComponent('مالقيناش صفحات. اتأكد إنك اخترت صفحتك في شاشة فيسبوك وإنك أدمن عليها.') : 'connected=0');
 

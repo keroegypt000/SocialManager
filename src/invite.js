@@ -99,7 +99,7 @@ export async function handleInvite(req, env, url) {
     const row = (it, sub) => `<label class="pick ${sub ? 'sub' : ''}">
         <input type="checkbox" name="k" value="${esc(`${it.platform}:${it.external_id}`)}" checked>
         ${it.picture ? `<img src="${esc(it.picture)}" alt="">` : ''}
-        <span class="tag ${it.platform === 'facebook' ? 'fb' : 'ig'}">${it.platform === 'facebook' ? 'فيسبوك' : 'إنستجرام'}</span>
+        <span class="tag ${it.platform === 'instagram' ? 'ig' : 'fb'}">${{ facebook: 'فيسبوك', instagram: 'إنستجرام', meta_ads: 'حساب إعلانات' }[it.platform]}</span>
         <b>${esc(it.name)}</b></label>`;
     return page('اختار صفحاتك', `<div class="card">
       ${url.searchParams.get('none') ? '<div class="err">اختار صفحة واحدة على الأقل.</div>' : ''}
@@ -108,6 +108,7 @@ export async function handleInvite(req, env, url) {
       <form method="post" action="${base}/pick">
         <input type="hidden" name="p" value="${esc(p)}">
         ${pages.map((pg) => row(pg, false) + pending.items.filter((i) => i.platform === 'instagram' && i.page_id === pg.page_id).map((ig) => row(ig, true)).join('')).join('')}
+        ${pending.items.filter((i) => i.platform === 'meta_ads').map((ad) => row(ad, false)).join('')}
         <button class="btn" type="submit">✅ اربط الصفحات دي</button>
       </form></div>`);
   }
