@@ -2,6 +2,7 @@ import { checkPassword, sessionCookie, clearCookie, isAuthed } from './auth.js';
 import { metaConfigured, readPending, savePending, mediaOf } from './meta.js';
 import { startVideo, putChunk, finishVideo, videoExists, MediaError } from './media.js';
 import { createInvite, revokeInvites } from './invite.js';
+import { buildReport, createReportLink, clientForReportLink } from './reports.js';
 import { publishPost, finalizePost } from './publisher.js';
 import { publicKey as pushPublicKey, subscribe as pushSubscribe, notifyAll } from './push.js';
 
@@ -116,6 +117,16 @@ async function route(req, env, url) {
     return json({ ok: true }, 200, { 'Set-Cookie': clearCookie() });
   }
 
+  // Read-only report shared with a client (no login).
+  let pr = path.match(/^\/public\/report\/([0-9a-f-]{36})$/);
+  if (pr && method === 'GET') {
+    const clientId = await clientForReportLink(env, pr[1]);
+    if (!clientId) throw new HttpError(404, 'لينك التقرير انتهى أو اتلغى');
+    try {
+      return json(await buildReport(env, clientId, url.searchParams.get('from'), url.searchParams.get('to')));
+    } catch (err) { bad(err.message); }
+  }
+
   if (!(await isAuthed(req, env))) throw new HttpError(401, 'سجّل الدخول الأول');
 
   // --- authenticated routes ---
@@ -225,6 +236,20 @@ async function route(req, env, url) {
     const result = await savePending(env, m[1], keys.map(String));
     if (!result) throw new HttpError(404, 'انتهت صلاحية الربط (30 دقيقة). دوس "ربط فيسبوك وإنستجرام" تاني.');
     return json(result);
+  }
+
+  // Reports
+  let rp = path.match(/^\/reports\/(\d+)$/);
+  if (rp && method === 'GET') {
+    try {
+      return json(await buildReport(env, Number(rp[1]), url.searchParams.get('from'), url.searchParams.get('to'), { refresh: url.searchParams.get('refresh') === '1' }));
+    } catch (err) { bad(err.message); }
+  }
+  rp = path.match(/^\/reports\/(\d+)\/link$/);
+  if (rp && method === 'POST') {
+    const c = await db.prepare('SELECT id FROM clients WHERE id = ?').bind(rp[1]).first();
+    if (!c) throw new HttpError(404, 'العميل مش موجود');
+    return json(await createReportLink(env, c.id, url.origin), 201);
   }
 
   // Invite link for a client to connect their own pages.

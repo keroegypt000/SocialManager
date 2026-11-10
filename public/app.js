@@ -158,6 +158,7 @@ const routes = {
   posts: renderPosts,
   connect: renderConnect,
   whatsapp: renderWhatsApp,
+  reports: renderReports,
 };
 
 let me = null;
@@ -169,6 +170,9 @@ function currentRoute() {
 }
 
 async function router() {
+  // A client opening a shared report link: no login, no sidebar.
+  const shared = location.hash.match(/^#\/r\/([0-9a-f-]{36})(?:\?(.*))?$/);
+  if (shared) return renderPublicReport(shared[1], new URLSearchParams(shared[2] || ''));
   if (!me) {
     try {
       me = await api('/me');
@@ -202,6 +206,7 @@ function shell(active) {
             <a href="#/compose" data-r="compose">منشور جديد</a>
             <a href="#/calendar" data-r="calendar">التقويم</a>
             <a href="#/posts" data-r="posts">المنشورات</a>
+            <a href="#/reports" data-r="reports">📊 التقارير</a>
             <a href="#/whatsapp" data-r="whatsapp">📱 حالات واتساب <span class="nav-badge" id="wa-badge" hidden></span></a>
             <a href="#/clients" data-r="clients">العملاء والحسابات</a>
           </nav>
@@ -1232,6 +1237,203 @@ async function renderWhatsApp(main) {
       await api(`/whatsapp/targets/${it.target_id}/skip`, { method: 'POST' });
       reload();
     };
+  }
+}
+
+// ---------- reports ----------
+const fmtNum = (n) => (n == null ? '—' : Number(n).toLocaleString('ar-EG'));
+const RANGES = [
+  ['7', 'آخر 7 أيام'],
+  ['30', 'آخر 30 يوم'],
+  ['this_month', 'الشهر ده'],
+  ['last_month', 'الشهر اللي فات'],
+  ['90', 'آخر 3 شهور'],
+];
+
+function rangeFor(key) {
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const tomorrow = new Date(today.getTime() + 86400000);
+  if (key === 'this_month') return [new Date(now.getFullYear(), now.getMonth(), 1).getTime(), tomorrow.getTime()];
+  if (key === 'last_month') return [new Date(now.getFullYear(), now.getMonth() - 1, 1).getTime(), new Date(now.getFullYear(), now.getMonth(), 1).getTime()];
+  const days = Number(key) || 30;
+  return [new Date(today.getTime() - (days - 1) * 86400000).getTime(), tomorrow.getTime()];
+}
+
+function barChart(daily, label, color) {
+  if (!daily?.length) return '';
+  const max = Math.max(1, ...daily.map((d) => d.value));
+  const w = 600;
+  const h = 150;
+  const bw = w / daily.length;
+  const bars = daily.map((d, i) => {
+    const bh = Math.max(1, (d.value / max) * (h - 20));
+    return `<rect x="${(i * bw + bw * 0.15).toFixed(1)}" y="${(h - bh).toFixed(1)}" width="${(bw * 0.7).toFixed(1)}" height="${bh.toFixed(1)}" rx="2" fill="${esc(color)}"><title>${esc(d.day)}: ${fmtNum(d.value)}</title></rect>`;
+  }).join('');
+  return `<div class="chart">
+    <div class="chart-head"><b>${esc(label)} يوم بيوم</b><span class="muted small">أعلى يوم: ${fmtNum(max)}</span></div>
+    <svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" dir="ltr" role="img" aria-label="${esc(label)}">${bars}</svg>
+    <div class="chart-foot muted small" dir="ltr"><span>${esc(daily[0].day)}</span><span>${esc(daily.at(-1).day)}</span></div>
+  </div>`;
+}
+
+function kpi(label, value, extra = '') {
+  return `<div class="kpi"><div class="kpi-label">${esc(label)}</div><div class="kpi-value">${fmtNum(value)}</div>${extra}</div>`;
+}
+
+function reportHtml(r) {
+  const accs = r.accounts || [];
+  const total = (k) => {
+    const vals = accs.map((a) => a.kpis?.[k]).filter((v) => v != null);
+    return vals.length ? vals.reduce((x, y) => x + y, 0) : null;
+  };
+  const period = `من ${new Date(r.from).toLocaleDateString('ar-EG', { dateStyle: 'medium' })} لحد ${new Date(r.to - 1).toLocaleDateString('ar-EG', { dateStyle: 'medium' })}`;
+  const anyErrors = accs.some((a) => a.errors?.length);
+  const color = r.client.color || '#4f46e5';
+
+  const section = (a) => {
+    const k = a.kpis || {};
+    const change = k.followers_change;
+    const changeHtml = change == null ? '' : `<div class="kpi-change ${change >= 0 ? 'up' : 'down'}">${change >= 0 ? '▲' : '▼'} ${fmtNum(Math.abs(change))} في الفترة</div>`;
+    const rate = k.engagement != null && k.reach ? `${((k.engagement / k.reach) * 100).toFixed(1)}%` : null;
+    const top = [...(a.posts || [])].sort((x, y) => (y.engagement || 0) - (x.engagement || 0)).slice(0, 5);
+    return `
+      <section class="card report-acc">
+        <div class="acc-head">
+          ${a.picture ? `<img src="${esc(a.picture)}" alt="">` : ''}
+          ${platformTag(a.platform)} <h2>${esc(a.name)}</h2>
+        </div>
+        <div class="kpis">
+          ${kpi('المتابعين', k.followers, changeHtml)}
+          ${kpi('المشاهدات', k.views)}
+          ${kpi('الوصول', k.reach)}
+          ${kpi('التفاعل', k.engagement, rate ? `<div class="kpi-change">${rate} من الوصول</div>` : '')}
+          ${kpi('المنشورات', k.posts)}
+        </div>
+        ${barChart(a.daily, a.dailyLabel || 'الأرقام', a.platform === 'instagram' ? '#dd2a7b' : '#1877f2')}
+        ${top.length ? `<h3>أحسن ${top.length} منشورات</h3>
+          <div class="top-posts">${top.map((p, i) => `
+            <a class="top-post" ${p.url ? `href="${esc(p.url)}" target="_blank" rel="noopener"` : ''}>
+              <span class="rank">${i + 1}</span>
+              ${p.image ? `<img src="${esc(p.image)}" alt="" loading="lazy">` : '<div class="noimg">📝</div>'}
+              <div class="tp-body">
+                <div class="tp-text">${esc((p.text || '').slice(0, 90)) || '<span class="muted">(من غير نص)</span>'}</div>
+                <div class="tp-meta muted small">
+                  ${p.time ? esc(new Date(p.time).toLocaleDateString('ar-EG', { dateStyle: 'medium' })) : ''}
+                  ${p.views != null ? ` · 👁 ${fmtNum(p.views)}` : ''} · ❤️ ${fmtNum(p.likes)} · 💬 ${fmtNum(p.comments)}${p.shares ? ` · 🔁 ${fmtNum(p.shares)}` : ''}${p.saved ? ` · 🔖 ${fmtNum(p.saved)}` : ''}
+                </div>
+              </div>
+            </a>`).join('')}</div>` : '<p class="muted small">مفيش منشورات في الفترة دي.</p>'}
+      </section>`;
+  };
+
+  return `
+    <div class="report">
+      <div class="report-title">
+        <span class="dot" style="background:${esc(color)};width:14px;height:14px"></span>
+        <div><h1>تقرير ${esc(r.client.name)}</h1><div class="muted">${esc(period)}</div></div>
+      </div>
+      <div class="kpis summary">
+        ${kpi('إجمالي المتابعين', total('followers'))}
+        ${kpi('إجمالي المشاهدات', total('views'))}
+        ${kpi('إجمالي الوصول', total('reach'))}
+        ${kpi('إجمالي التفاعل', total('engagement'))}
+        ${kpi('منشورات اتنشرت من المنصة', r.platform?.published)}
+        ${r.platform?.whatsapp ? kpi('حالات واتساب', r.platform.whatsapp) : ''}
+      </div>
+      ${accs.length ? accs.map(section).join('') : '<div class="card empty">العميل ده مفيش عنده حسابات فيسبوك أو إنستجرام مربوطة.</div>'}
+      ${anyErrors ? `<details class="card no-print report-errors"><summary>⚠️ بعض الأرقام مش ظاهرة، دوس عشان تعرف السبب</summary>
+        <p class="small">غالباً الصلاحية <code>read_insights</code> (فيسبوك) أو <code>instagram_manage_insights</code> (إنستجرام) مش متضافة، أو الحساب محتاج يتربط تاني بعد إضافتها. وإنستجرام مش بيدّي عدد المتابعين الجداد للحسابات اللي أقل من 100 متابع.</p>
+        ${accs.filter((a) => a.errors?.length).map((a) => `<div class="small"><b>${esc(a.name)}:</b><ul>${a.errors.map((e) => `<li>${esc(e)}</li>`).join('')}</ul></div>`).join('')}
+      </details>` : ''}
+      <p class="muted small report-foot">اتعمل ${esc(fmtDate(r.generated_at))} · الأرقام من فيسبوك وإنستجرام، وممكن تتأخر لحد يومين.</p>
+    </div>`;
+}
+
+async function renderReports(main, params) {
+  const clients = await loadClients();
+  if (!clients.length) {
+    main.innerHTML = '<div class="page-head"><h1>📊 التقارير</h1></div><div class="card empty">ضيف عميل الأول.</div>';
+    return;
+  }
+  const clientId = params.get('client') || clients[0].id;
+  const rangeKey = params.get('range') || '30';
+  main.innerHTML = `
+    <div class="page-head no-print"><h1>📊 التقارير</h1>
+      <div class="report-actions">
+        <button class="btn" id="r-refresh" title="هات الأرقام من جديد من فيسبوك وإنستجرام">🔄 تحديث</button>
+        <button class="btn" id="r-print">🖨️ طباعة / PDF</button>
+        <button class="btn primary" id="r-link">🔗 لينك للعميل</button>
+      </div>
+    </div>
+    <div class="row no-print" style="margin-bottom:16px">
+      <div><label for="r-client">العميل</label>
+        <select id="r-client">${clients.map((c) => `<option value="${c.id}" ${String(c.id) === String(clientId) ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select></div>
+      <div><label for="r-range">الفترة</label>
+        <select id="r-range">${RANGES.map(([v, l]) => `<option value="${v}" ${v === rangeKey ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
+    </div>
+    <div id="r-body"><div class="boot">بيجمّع الأرقام من فيسبوك وإنستجرام… (أول مرة بتاخد ثواني)</div></div>`;
+
+  const go = () => { location.hash = `#/reports?client=${$('#r-client').value}&range=${$('#r-range').value}`; };
+  $('#r-client').onchange = go;
+  $('#r-range').onchange = go;
+  $('#r-print').onclick = () => window.print();
+  const [from, to] = rangeFor(rangeKey);
+  const load = async (refresh) => {
+    $('#r-body').innerHTML = '<div class="boot">بيجمّع الأرقام من فيسبوك وإنستجرام…</div>';
+    try {
+      const r = await api(`/reports/${clientId}?from=${from}&to=${to}${refresh ? '&refresh=1' : ''}`);
+      $('#r-body').innerHTML = reportHtml(r);
+    } catch (err) {
+      $('#r-body').innerHTML = `<div class="notice bad">${esc(err.message)}</div>`;
+    }
+  };
+  $('#r-refresh').onclick = () => load(true);
+  $('#r-link').onclick = async () => {
+    const c = clients.find((x) => String(x.id) === String(clientId));
+    const link = await api(`/reports/${clientId}/link`, { method: 'POST' });
+    const msg = `أهلاً ${c.name} 👋\nده تقرير صفحاتك، بيتحدث لوحده وتقدر تختار الفترة:\n${link.url}`;
+    const dlg = document.createElement('dialog');
+    dlg.className = 'dialog';
+    dlg.innerHTML = `<form method="dialog" class="dlg-body">
+      <div class="dlg-head"><b>🔗 لينك التقرير: ${esc(c.name)}</b><button class="btn small dlg-close" value="close">✕</button></div>
+      <p style="margin:0">العميل يقدر يفتح التقرير ده في أي وقت ويشوف الأرقام محدّثة، من غير ما يدخل المنصة. <b>للقراية بس</b>، ومش هيقدر يغيّر حاجة.</p>
+      <input readonly dir="ltr" value="${esc(link.url)}" onclick="this.select()">
+      <div class="dlg-actions" style="border:0;padding:0">
+        <button type="button" class="btn primary small" data-c>📋 انسخ اللينك</button>
+        <a class="btn small" style="background:#25d366;border-color:#25d366;color:#fff" target="_blank" rel="noopener" href="https://wa.me/?text=${encodeURIComponent(msg)}">ابعته واتساب</a>
+      </div>
+      <div class="muted small">اللينك شغال 3 شهور.</div></form>`;
+    document.body.appendChild(dlg);
+    dlg.querySelector('[data-c]').onclick = async () => {
+      try { await navigator.clipboard.writeText(link.url); toast('اللينك اتنسخ 📋'); } catch { dlg.querySelector('input').select(); }
+    };
+    dlg.addEventListener('close', () => dlg.remove());
+    dlg.showModal();
+  };
+  await load(false);
+}
+
+// Read-only report opened by a client from a shared link (no login).
+async function renderPublicReport(token, params) {
+  const rangeKey = params.get('range') || '30';
+  app.innerHTML = `<main class="main public-report">
+    <div class="row no-print" style="margin-bottom:16px;align-items:end">
+      <div><label for="pr-range">الفترة</label>
+        <select id="pr-range">${RANGES.map(([v, l]) => `<option value="${v}" ${v === rangeKey ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
+      <div style="flex:0"><button class="btn" id="pr-print">🖨️ طباعة / PDF</button></div>
+    </div>
+    <div id="pr-body"><div class="boot">بيجهّز التقرير…</div></div></main>`;
+  $('#pr-range').onchange = () => { location.hash = `#/r/${token}?range=${$('#pr-range').value}`; };
+  $('#pr-print').onclick = () => window.print();
+  const [from, to] = rangeFor(rangeKey);
+  try {
+    const res = await fetch(`/api/public/report/${token}?from=${from}&to=${to}`);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'مش قادر أفتح التقرير');
+    $('#pr-body').innerHTML = reportHtml(data);
+  } catch (err) {
+    $('#pr-body').innerHTML = `<div class="notice bad">${esc(err.message)}</div>`;
   }
 }
 

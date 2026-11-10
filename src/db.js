@@ -52,6 +52,14 @@ const SCHEMA = [
     expires_at INTEGER NOT NULL,
     used_at INTEGER
   )`,
+  // Reports: cached results (live Graph API calls are slow) and read-only links for clients.
+  `CREATE TABLE IF NOT EXISTS report_cache (key TEXT PRIMARY KEY, json TEXT NOT NULL, created_at INTEGER NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS report_links (
+    token TEXT PRIMARY KEY,
+    client_id INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL
+  )`,
   // Small key/value store (e.g. the web-push keys, generated on first use).
   `CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
   // Phones/browsers that asked for notifications.

@@ -10,6 +10,8 @@ const SCOPES = [
   'instagram_basic',
   'instagram_content_publish',
   'business_management',
+  'read_insights',
+  'instagram_manage_insights',
 ];
 
 const version = (env) => env.META_GRAPH_VERSION || 'v23.0';
