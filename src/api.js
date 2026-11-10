@@ -266,6 +266,40 @@ async function route(req, env, url) {
     return json(parsePost(saved));
   }
 
+  // Move a post to a new time (calendar drag or "change time").
+  m = path.match(/^\/posts\/(\d+)\/move$/);
+  if (m && method === 'POST') {
+    const { scheduled_at } = await body(req);
+    const at = Number(scheduled_at);
+    if (!at || at < Date.now() - 60000) bad('الميعاد الجديد لازم يكون في المستقبل');
+    const p = await db.prepare('SELECT status FROM posts WHERE id = ?').bind(m[1]).first();
+    if (!p) throw new HttpError(404, 'المنشور مش موجود');
+    if (!['draft', 'scheduled', 'failed', 'partial'].includes(p.status)) bad('المنشور ده اتنشر خلاص، مينفعش يتنقل. اعمل منه نسخة.');
+    // A draft stays a draft; anything else becomes scheduled for the new time.
+    const status = p.status === 'draft' ? 'draft' : 'scheduled';
+    await db.prepare('UPDATE posts SET scheduled_at = ?, status = ? WHERE id = ?').bind(at, status, m[1]).run();
+    const saved = await db.prepare(`${POST_SELECT} WHERE p.id = ?`).bind(m[1]).first();
+    return json(parsePost(saved));
+  }
+
+  // Copy a post (any status) to a new time.
+  m = path.match(/^\/posts\/(\d+)\/duplicate$/);
+  if (m && method === 'POST') {
+    const { scheduled_at } = await body(req);
+    const at = Number(scheduled_at);
+    if (!at || at < Date.now() - 60000) bad('ميعاد النسخة لازم يكون في المستقبل');
+    const src = await db.prepare('SELECT * FROM posts WHERE id = ?').bind(m[1]).first();
+    if (!src) throw new HttpError(404, 'المنشور مش موجود');
+    const { results: targets } = await db.prepare('SELECT account_id FROM post_targets WHERE post_id = ?').bind(m[1]).all();
+    if (!targets.length) bad('المنشور ده ملوش حسابات. الحسابات بتاعته اتشالت.');
+    const copy = await db.prepare(
+      "INSERT INTO posts (client_id, message, image_url, link, scheduled_at, status, created_at) VALUES (?, ?, ?, ?, ?, 'scheduled', ?) RETURNING id"
+    ).bind(src.client_id, src.message, src.image_url, src.link, at, Date.now()).first();
+    await db.batch(targets.map((t) => db.prepare('INSERT INTO post_targets (post_id, account_id) VALUES (?, ?)').bind(copy.id, t.account_id)));
+    const saved = await db.prepare(`${POST_SELECT} WHERE p.id = ?`).bind(copy.id).first();
+    return json(parsePost(saved), 201);
+  }
+
   // Delete the upcoming (not yet published) posts of a series.
   m = path.match(/^\/series\/([0-9a-f-]{36})$/);
   if (m && method === 'DELETE') {

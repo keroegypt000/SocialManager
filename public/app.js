@@ -432,7 +432,12 @@ async function renderCompose(main, params) {
   const isEdit = Boolean(editId);
   const preselect = source ? source.client_id : params.get('client') || clients[0].id;
   const soon = Date.now() + 60 * 60 * 1000;
-  const firstWhen = isEdit && source.scheduled_at ? source.scheduled_at : soon;
+  // Opened from a calendar day: default to 10 AM that day (or an hour from now if that's already past).
+  let firstWhen = isEdit && source.scheduled_at ? source.scheduled_at : soon;
+  if (!isEdit && /^\d{4}-\d{2}-\d{2}$/.test(params.get('date') || '')) {
+    const d = parseDateInput(params.get('date'));
+    firstWhen = Math.max(new Date(d.getFullYear(), d.getMonth(), d.getDate(), 10, 0).getTime(), soon);
+  }
   const title = isEdit ? 'تعديل منشور' : copyId ? 'نسخ / تكرار منشور' : 'منشور جديد';
 
   main.innerHTML = `
@@ -744,6 +749,15 @@ async function toJpeg(file) {
 
 // ---------- calendar ----------
 let calMonth = null;
+const EDITABLE = ['draft', 'scheduled', 'failed', 'partial'];
+const postTime = (p) => p.scheduled_at || p.created_at;
+const fmtTime = (ms) => new Date(ms).toLocaleTimeString('ar-EG', { hour: 'numeric', minute: '2-digit' });
+// Same clock time on another day.
+const atDay = (dateStr, fromMs) => {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const f = new Date(fromMs);
+  return new Date(y, m - 1, d, f.getHours(), f.getMinutes()).getTime();
+};
 
 async function renderCalendar(main) {
   const today = new Date();
@@ -759,29 +773,24 @@ async function renderCalendar(main) {
   end.setDate(start.getDate() + 42);
 
   const posts = await api(`/posts?from=${start.getTime()}&to=${end.getTime()}`);
+  const byId = new Map(posts.map((p) => [String(p.id), p]));
   const byDay = {};
-  for (const p of posts) {
-    const d = new Date(p.scheduled_at || p.created_at);
-    const key = d.toDateString();
-    (byDay[key] ||= []).push(p);
-  }
+  for (const p of posts) (byDay[new Date(postTime(p)).toDateString()] ||= []).push(p);
 
   const days = [];
   for (let i = 0; i < 42; i++) {
     const d = new Date(start);
     d.setDate(start.getDate() + i);
-    const list = (byDay[d.toDateString()] || []).sort((a, b) => (a.scheduled_at || a.created_at) - (b.scheduled_at || b.created_at));
+    const list = (byDay[d.toDateString()] || []).sort((a, b) => postTime(a) - postTime(b));
     days.push(`
-      <div class="day ${d.getMonth() !== month ? 'out' : ''} ${d.toDateString() === today.toDateString() ? 'today' : ''}">
-        <div class="num">${d.getDate()}</div>
-        ${list.map((p) => {
-          const editable = ['draft', 'scheduled', 'failed', 'partial'].includes(p.status);
-          const href = editable ? `#/compose?edit=${p.id}` : `#/compose?copy=${p.id}`;
-          const hint = editable ? 'دوس للتعديل' : 'اتنشر — دوس عشان تعمل نسخة';
-          return `<a class="chip" href="${href}" style="background:${esc(p.client_color)}" title="${esc(p.client_name)} — ${esc(STATUS[p.status])} (${hint})\n${esc(p.message)}">
-          ${p.series_id ? '🔁 ' : ''}${new Date(p.scheduled_at || p.created_at).toLocaleTimeString('ar-EG', { hour: 'numeric', minute: '2-digit' })} ${esc(p.message.slice(0, 30) || 'صورة')}
-        </a>`;
-        }).join('')}
+      <div class="day ${d.getMonth() !== month ? 'out' : ''} ${d.toDateString() === today.toDateString() ? 'today' : ''}" data-date="${toDateInput(d)}">
+        <div class="num">${d.getDate()}<span class="add" title="منشور جديد في اليوم ده">+</span></div>
+        ${list.map((p) => `
+          <div class="chip status-${esc(p.status)}" draggable="true" data-id="${p.id}" style="--c:${esc(p.client_color)}"
+               title="${esc(p.client_name)} — ${esc(STATUS[p.status])}\n${esc(p.message)}">
+            <span class="chip-time">${p.series_id ? '🔁 ' : ''}${fmtTime(postTime(p))}</span>
+            <span class="chip-text">${esc(p.message.slice(0, 40) || '📷 صورة')}</span>
+          </div>`).join('')}
       </div>`);
   }
 
@@ -789,18 +798,186 @@ async function renderCalendar(main) {
   main.innerHTML = `
     <div class="page-head">
       <h1>${first.toLocaleDateString('ar-EG', { month: 'long', year: 'numeric' })}</h1>
-      <div style="display:flex;gap:8px">
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
         <button class="btn" id="prev">→ الشهر اللي فات</button>
         <button class="btn" id="this">النهارده</button>
         <button class="btn" id="next">الشهر الجاي ←</button>
       </div>
     </div>
+    <div class="muted small cal-tips">
+      دوس على منشور عشان تعدّله أو تنسخه · اسحب منشور لأي يوم عشان تنقله · اسحب وإنت ضاغط <b>Ctrl</b> عشان تعمل نسخة · دوس على <b>+</b> في أي يوم لمنشور جديد
+    </div>
     <div class="cal-head">${weekdays.map((w) => `<div>${w}</div>`).join('')}</div>
-    <div class="cal">${days.join('')}</div>`;
+    <div class="cal">${days.join('')}</div>
+    <dialog id="post-dialog" class="dialog"></dialog>`;
 
-  $('#prev').onclick = () => { calMonth = new Date(year, month - 1, 1); renderCalendar(main); };
-  $('#next').onclick = () => { calMonth = new Date(year, month + 1, 1); renderCalendar(main); };
-  $('#this').onclick = () => { calMonth = null; renderCalendar(main); };
+  const reload = () => renderCalendar(main);
+  $('#prev').onclick = () => { calMonth = new Date(year, month - 1, 1); reload(); };
+  $('#next').onclick = () => { calMonth = new Date(year, month + 1, 1); reload(); };
+  $('#this').onclick = () => { calMonth = null; reload(); };
+
+  // Click a post -> popup. Click "+" on a day -> new post on that day.
+  main.querySelector('.cal').addEventListener('click', (e) => {
+    const chip = e.target.closest('.chip');
+    if (chip) return openPostDialog(byId.get(chip.dataset.id), reload);
+    if (e.target.closest('.add')) location.hash = `#/compose?date=${e.target.closest('.day').dataset.date}`;
+  });
+
+  // Drag a post to another day: move it, or copy it when Ctrl/Alt is held.
+  let dragged = null;
+  main.querySelectorAll('.chip').forEach((chip) => {
+    chip.addEventListener('dragstart', (e) => {
+      dragged = byId.get(chip.dataset.id);
+      e.dataTransfer.effectAllowed = 'copyMove';
+      e.dataTransfer.setData('text/plain', chip.dataset.id);
+      chip.classList.add('dragging');
+    });
+    chip.addEventListener('dragend', () => chip.classList.remove('dragging'));
+  });
+  main.querySelectorAll('.day').forEach((day) => {
+    day.addEventListener('dragover', (e) => {
+      if (!dragged) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = e.ctrlKey || e.altKey || e.metaKey || !EDITABLE.includes(dragged.status) ? 'copy' : 'move';
+      day.classList.add('drop-target');
+    });
+    day.addEventListener('dragleave', () => day.classList.remove('drop-target'));
+    day.addEventListener('drop', async (e) => {
+      e.preventDefault();
+      day.classList.remove('drop-target');
+      const p = dragged;
+      dragged = null;
+      if (!p) return;
+      const at = atDay(day.dataset.date, postTime(p));
+      let copy = e.ctrlKey || e.altKey || e.metaKey;
+      if (!copy && !EDITABLE.includes(p.status)) {
+        if (!confirm('المنشور ده اتنشر خلاص ومينفعش يتنقل. تعمل منه نسخة في اليوم ده؟')) return;
+        copy = true;
+      }
+      if (!copy && new Date(postTime(p)).toDateString() === new Date(at).toDateString()) return;
+      try {
+        await api(`/posts/${p.id}/${copy ? 'duplicate' : 'move'}`, { method: 'POST', body: { scheduled_at: at } });
+        toast(copy ? `اتعملت نسخة يوم ${fmtDate(at)}` : `اتنقل ليوم ${fmtDate(at)}`);
+        reload();
+      } catch (err) {
+        toast(err.message);
+      }
+    });
+  });
+}
+
+// Popup with everything you can do to one post without leaving the calendar.
+function openPostDialog(p, reload) {
+  const dlg = $('#post-dialog');
+  const editable = EDITABLE.includes(p.status);
+  const when = postTime(p);
+  const base = Math.max(when, Date.now() + 15 * 60 * 1000);
+  const targets = p.targets.map((t) => `
+    <div>${platformTag(t.platform)} ${esc(t.name)} ${t.status !== 'pending' ? badge(t.status) : ''}
+      ${t.error ? `<div class="target-error">${esc(t.error)}</div>` : ''}</div>`).join('');
+
+  dlg.innerHTML = `
+    <form method="dialog" class="dlg-body">
+      <div class="dlg-head">
+        <span class="dot" style="background:${esc(p.client_color)}"></span><b>${esc(p.client_name)}</b>
+        ${badge(p.status)} ${p.series_id ? '<span class="badge">🔁 متكرر</span>' : ''}
+        <button class="btn small dlg-close" value="close" title="قفل">✕</button>
+      </div>
+      <div class="dlg-when">🕒 ${esc(fmtDate(when))}</div>
+      <div class="dlg-content">
+        ${p.image_url ? `<img src="${esc(p.image_url)}" alt="">` : ''}
+        <div class="dlg-text">${esc(p.message) || '<span class="muted">(صورة بدون نص)</span>'}</div>
+      </div>
+      <div class="meta" style="display:grid;gap:4px">${targets}</div>
+
+      ${editable ? `
+      <div class="dlg-section">
+        <label for="dlg-move">🕒 تغيير الميعاد</label>
+        <div class="time-row">
+          <input id="dlg-move" type="datetime-local" value="${toLocalInput(when > Date.now() ? when : base)}">
+          <button type="button" class="btn primary small" data-do="move">حفظ الميعاد</button>
+        </div>
+      </div>` : ''}
+
+      <div class="dlg-section">
+        <label for="dlg-copy">📋 نسخ لميعاد تاني</label>
+        <div class="quick">
+          <button type="button" class="btn small" data-plus="1">+ يوم</button>
+          <button type="button" class="btn small" data-plus="7">+ أسبوع</button>
+          <button type="button" class="btn small" data-plus="month">+ شهر</button>
+        </div>
+        <div class="time-row">
+          <input id="dlg-copy" type="datetime-local" value="${toLocalInput(when + 86400000 > Date.now() ? when + 86400000 : base + 86400000)}">
+          <button type="button" class="btn primary small" data-do="copy">انسخ</button>
+        </div>
+      </div>
+
+      <div id="dlg-err" class="notice bad" hidden></div>
+      <div class="dlg-actions">
+        ${editable ? `<a class="btn small" href="#/compose?edit=${p.id}">✏️ تعديل كامل</a>` : ''}
+        <a class="btn small" href="#/compose?copy=${p.id}">🔁 نسخ وتكرار</a>
+        ${editable ? '<button type="button" class="btn small" data-do="publish">انشر دلوقتي</button>' : ''}
+        <button type="button" class="btn small danger" data-do="delete">حذف</button>
+      </div>
+    </form>`;
+
+  const err = dlg.querySelector('#dlg-err');
+  const run = async (fn) => {
+    err.hidden = true;
+    try {
+      await fn();
+      dlg.close();
+      reload();
+    } catch (e) {
+      err.textContent = e.message;
+      err.hidden = false;
+    }
+  };
+  const copyInput = dlg.querySelector('#dlg-copy');
+  dlg.querySelectorAll('[data-plus]').forEach((b) => {
+    b.onclick = () => {
+      const d = new Date(when);
+      if (b.dataset.plus === 'month') d.setMonth(d.getMonth() + 1);
+      else d.setDate(d.getDate() + Number(b.dataset.plus));
+      copyInput.value = toLocalInput(d.getTime());
+    };
+  });
+  dlg.querySelectorAll('[data-do]').forEach((b) => {
+    b.onclick = () => {
+      const act = b.dataset.do;
+      if (act === 'move') {
+        return run(async () => {
+          const at = new Date(dlg.querySelector('#dlg-move').value).getTime();
+          await api(`/posts/${p.id}/move`, { method: 'POST', body: { scheduled_at: at } });
+          toast(`الميعاد اتغير لـ ${fmtDate(at)}`);
+        });
+      }
+      if (act === 'copy') {
+        return run(async () => {
+          const at = new Date(copyInput.value).getTime();
+          await api(`/posts/${p.id}/duplicate`, { method: 'POST', body: { scheduled_at: at } });
+          toast(`اتعملت نسخة يوم ${fmtDate(at)}`);
+        });
+      }
+      if (act === 'publish') {
+        b.disabled = true;
+        b.textContent = 'جاري النشر…';
+        return run(async () => {
+          const r = await api(`/posts/${p.id}/publish`, { method: 'POST' });
+          toast(r.status === 'published' ? 'اتنشر بنجاح' : 'فيه حسابات ماتنشرش عليها');
+        });
+      }
+      if (act === 'delete') {
+        if (!confirm('تحذف المنشور ده من المنصة؟ (مش هيتمسح من فيسبوك أو إنستجرام لو كان اتنشر)')) return;
+        return run(async () => {
+          await api(`/posts/${p.id}`, { method: 'DELETE' });
+          toast('اتحذف');
+        });
+      }
+    };
+  });
+  dlg.querySelectorAll('a').forEach((a) => a.addEventListener('click', () => dlg.close()));
+  dlg.showModal();
 }
 
 // ---------- posts ----------
