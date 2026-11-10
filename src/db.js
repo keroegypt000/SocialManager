@@ -44,6 +44,10 @@ const SCHEMA = [
     payload_enc TEXT NOT NULL,
     expires_at INTEGER NOT NULL
   )`,
+  // Small key/value store (e.g. the web-push keys, generated on first use).
+  `CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
+  // Phones/browsers that asked for notifications.
+  `CREATE TABLE IF NOT EXISTS push_subscriptions (endpoint TEXT PRIMARY KEY, created_at INTEGER NOT NULL)`,
   `CREATE INDEX IF NOT EXISTS idx_posts_due ON posts (status, scheduled_at)`,
   `CREATE INDEX IF NOT EXISTS idx_targets_post ON post_targets (post_id)`,
 ];

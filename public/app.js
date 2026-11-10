@@ -12,11 +12,12 @@ const STATUS = {
   publishing: 'جاري النشر',
   published: 'اتنشر',
   partial: 'اتنشر جزئياً',
+  manual: 'مستني تنشره على واتساب',
   failed: 'فشل',
   pending: 'منتظر',
   processing: 'إنستجرام بيجهّز الفيديو',
 };
-const PLATFORM = { facebook: 'فيسبوك', instagram: 'إنستجرام' };
+const PLATFORM = { facebook: 'فيسبوك', instagram: 'إنستجرام', whatsapp: 'حالة واتساب' };
 
 const fmtDate = (ms) => ms ? new Date(ms).toLocaleString('ar-EG', { dateStyle: 'medium', timeStyle: 'short' }) : '';
 
@@ -64,6 +65,27 @@ function askConfirm(message, { ok = 'تمام', cancel = 'إلغاء' } = {}) {
   });
 }
 
+// In-page text question; resolves to the text, or null if cancelled.
+function askText(message, placeholder = '') {
+  return new Promise((resolve) => {
+    const dlg = document.createElement('dialog');
+    dlg.className = 'dialog confirm-dialog';
+    dlg.innerHTML = `<form method="dialog" class="dlg-body">
+      <label style="font-weight:600;line-height:1.8">${esc(message)}</label>
+      <input name="v" placeholder="${esc(placeholder)}" autofocus>
+      <div class="dlg-actions" style="border:0;padding:0">
+        <button class="btn primary" value="ok">تمام</button>
+        <button class="btn" value="cancel" formnovalidate>إلغاء</button>
+      </div></form>`;
+    document.body.appendChild(dlg);
+    dlg.addEventListener('close', () => {
+      resolve(dlg.returnValue === 'ok' ? dlg.querySelector('input').value.trim() : null);
+      dlg.remove();
+    });
+    dlg.showModal();
+  });
+}
+
 async function api(path, { method = 'GET', body } = {}) {
   const res = await fetch('/api' + path, {
     method,
@@ -100,6 +122,7 @@ const routes = {
   calendar: renderCalendar,
   posts: renderPosts,
   connect: renderConnect,
+  whatsapp: renderWhatsApp,
 };
 
 let me = null;
@@ -121,6 +144,7 @@ async function router() {
   }
   const { name, params } = currentRoute();
   shell(name);
+  updateWaBadge();
   const main = $('#main');
   main.innerHTML = '<div class="boot">جاري التحميل…</div>';
   try {
@@ -143,6 +167,7 @@ function shell(active) {
             <a href="#/compose" data-r="compose">منشور جديد</a>
             <a href="#/calendar" data-r="calendar">التقويم</a>
             <a href="#/posts" data-r="posts">المنشورات</a>
+            <a href="#/whatsapp" data-r="whatsapp">📱 حالات واتساب <span class="nav-badge" id="wa-badge" hidden></span></a>
             <a href="#/clients" data-r="clients">العملاء والحسابات</a>
           </nav>
           <div class="spacer"></div>
@@ -209,6 +234,7 @@ async function loadClients() {
 const publishMsg = (status) => ({
   published: 'اتنشر بنجاح ✅',
   publishing: 'اتبعت ✅ إنستجرام بيجهّز الفيديو، وهينزل لوحده خلال دقايق',
+  manual: 'اتنشر ✅ وحالة الواتساب جاهزة: افتح "حالات واتساب" من الموبايل وانشرها بلمسة',
 }[status] || 'فيه حسابات ماتنشرش عليها، شوف السبب تحت المنشور');
 
 // Small media helpers shared by the posts list, calendar and popup.
@@ -348,6 +374,15 @@ async function renderClients(main, params) {
       renderClients(main, new URLSearchParams());
     };
   });
+  main.querySelectorAll('[data-add-wa]').forEach((b) => {
+    b.onclick = async () => {
+      const name = await askText('اسم لحساب واتساب ده (مثلاً رقم العميل أو اسم الموبايل):', 'واتساب المحل');
+      if (name === null) return;
+      await api('/accounts/whatsapp', { method: 'POST', body: { client_id: Number(b.dataset.addWa), name } });
+      toast('اتضاف ✅ اختاره في منشور جديد مع باقي الحسابات');
+      renderClients(main, new URLSearchParams());
+    };
+  });
   main.querySelectorAll('[data-move-account]').forEach((sel) => {
     sel.onchange = async () => {
       if (!sel.value) return;
@@ -389,6 +424,7 @@ function clientCard(c, accounts, clients) {
         ${me.metaConfigured
           ? `<a class="btn primary small" href="/auth/meta/start?client_id=${c.id}">ربط فيسبوك وإنستجرام</a>`
           : '<span class="muted small">الربط هيتفعّل بعد إعداد تطبيق Meta</span>'}
+        <button class="btn small" data-add-wa="${c.id}">+ حالة واتساب</button>
         <a class="btn small" href="#/compose?client=${c.id}">منشور جديد</a>
       </div>
     </div>`;
@@ -949,6 +985,161 @@ async function toJpeg(file) {
   bitmap.close?.();
   return new Promise((resolve, reject) =>
     canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('فشل تجهيز الصورة'))), 'image/jpeg', 0.9));
+}
+
+// ---------- WhatsApp statuses: share from the phone in one tap ----------
+const canShareFiles = () => {
+  try {
+    return Boolean(navigator.canShare && navigator.canShare({ files: [new File(['x'], 'x.jpg', { type: 'image/jpeg' })] }));
+  } catch { return false; }
+};
+
+async function updateWaBadge() {
+  try {
+    const { count } = await api('/whatsapp/count');
+    const b = $('#wa-badge');
+    if (b) { b.textContent = count; b.hidden = !count; }
+    return count;
+  } catch { return 0; }
+}
+
+// --- notifications ---
+async function pushStatus() {
+  if (!('serviceWorker' in navigator) || !('PushManager' in window)) return 'unsupported';
+  const reg = await navigator.serviceWorker.getRegistration('/');
+  const sub = reg && (await reg.pushManager.getSubscription());
+  return sub ? 'on' : Notification.permission === 'denied' ? 'denied' : 'off';
+}
+
+function urlB64ToBytes(b64) {
+  const s = (b64 + '='.repeat((4 - (b64.length % 4)) % 4)).replace(/-/g, '+').replace(/_/g, '/');
+  return Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+}
+
+async function enablePush() {
+  const perm = await Notification.requestPermission();
+  if (perm !== 'granted') throw new Error('الإشعارات اترفضت. فعّلها من إعدادات المتصفح للموقع ده.');
+  const reg = await navigator.serviceWorker.register('/sw.js', { scope: '/' });
+  await navigator.serviceWorker.ready;
+  const { publicKey } = await api('/push/key');
+  let sub = await reg.pushManager.getSubscription();
+  if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlB64ToBytes(publicKey) });
+  await api('/push/subscribe', { method: 'POST', body: { endpoint: sub.endpoint } });
+}
+
+async function renderWhatsApp(main) {
+  const [data, push] = await Promise.all([api('/whatsapp/queue'), pushStatus().catch(() => 'unsupported')]);
+  const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
+  const standalone = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone;
+  const shareOk = canShareFiles();
+
+  const pushBox = {
+    on: `<div class="notice ok">🔔 الإشعارات شغالة على الجهاز ده. <button class="btn small" id="push-test">جرّب إشعار</button></div>`,
+    off: `<div class="notice">🔔 عشان يوصلك إشعار لما حالة يجي ميعادها، فعّل الإشعارات على الموبايل اللي عليه واتساب.
+           <button class="btn primary small" id="push-on">فعّل الإشعارات</button></div>`,
+    denied: '<div class="notice bad">الإشعارات مقفولة للموقع ده. فعّلها من إعدادات المتصفح وارجع هنا.</div>',
+    unsupported: isIOS && !standalone
+      ? '<div class="notice">📱 على الآيفون: دوس زرار المشاركة <b>⎋</b> تحت في Safari ← <b>إضافة إلى الشاشة الرئيسية</b>، وافتح المنصة من الأيقونة الجديدة، وبعدها فعّل الإشعارات من هنا.</div>'
+      : '<div class="notice">المتصفح ده مش بيدعم الإشعارات. افتح المنصة من Chrome على الموبايل.</div>',
+  }[push];
+
+  const card = (it) => {
+    const m = it.media || [];
+    const video = m.find((x) => x.type === 'video');
+    const when = it.scheduled_at || it.created_at;
+    const preview = video
+      ? `<video src="${esc(video.url)}" controls preload="metadata"></video>`
+      : m.length ? `<div class="wa-imgs">${m.map((x) => `<img src="${esc(x.url)}" alt="">`).join('')}</div>` : '';
+    return `
+      <div class="card wa-card" data-target="${it.target_id}">
+        <div class="meta" style="margin:0 0 8px">
+          <span class="dot" style="background:${esc(it.client_color)}"></span><b>${esc(it.client_name)}</b>
+          <span class="platform whatsapp">واتساب</span> ${esc(it.account_name)} · <span>${esc(fmtDate(when))}</span>
+        </div>
+        ${preview}
+        ${it.message ? `<div class="wa-text">${esc(it.message)}</div>` : ''}
+        <div class="wa-actions">
+          ${shareOk ? `<button class="btn primary" data-share disabled>⏳ بيتجهز…</button>` : ''}
+          ${it.message ? '<button class="btn small" data-copy>📋 انسخ الكلام</button>' : ''}
+          ${m.map((x, i) => `<a class="btn small" href="${esc(x.url)}" download="status-${it.target_id}-${i + 1}.${x.type === 'video' ? 'mp4' : 'jpg'}">⬇️ حمّل ${x.type === 'video' ? 'الفيديو' : m.length > 1 ? `صورة ${i + 1}` : 'الصورة'}</a>`).join('')}
+        </div>
+        <div class="wa-actions" style="margin-top:6px">
+          <button class="btn small" data-done>✅ نزلتها على الحالة</button>
+          <button class="btn small danger" data-skip>تخطي</button>
+        </div>
+      </div>`;
+  };
+
+  main.innerHTML = `
+    <div class="page-head"><h1>📱 حالات واتساب</h1></div>
+    ${pushBox}
+    ${!shareOk ? '<div class="notice">💡 عشان تنشر بلمسة واحدة، افتح الصفحة دي من <b>الموبايل</b> اللي عليه واتساب. من الكمبيوتر تقدر تحمّل الصورة وتنسخ الكلام.</div>' : ''}
+    <h2>جاهزة للنشر ${data.ready.length ? `(${data.ready.length})` : ''}</h2>
+    <div class="grid wa-grid">${data.ready.length ? data.ready.map(card).join('') : '<div class="card empty">مفيش حالات مستنياك دلوقتي 👌</div>'}</div>
+    <h2 style="margin-top:24px">الجاية (الأسبوع ده)</h2>
+    <div class="card">${data.upcoming.length ? data.upcoming.map((it) => `
+      <div class="post"><div class="body">
+        <div class="meta" style="margin:0"><span class="dot" style="background:${esc(it.client_color)}"></span><b>${esc(it.client_name)}</b> · ${esc(fmtDate(it.scheduled_at))} ${mediaIcon(it)}</div>
+        <div class="text">${esc(it.message) || '<span class="muted">(صورة بدون نص)</span>'}</div>
+      </div></div>`).join('') : '<div class="empty">مفيش حالات مجدولة الأسبوع ده. ضيف حساب "حالة واتساب" للعميل من صفحة العملاء، واختاره في منشور جديد.</div>'}</div>`;
+
+  const reload = () => { renderWhatsApp(main); updateWaBadge(); };
+  $('#push-on')?.addEventListener('click', async (e) => {
+    e.target.disabled = true;
+    try { await enablePush(); toast('الإشعارات اتفعّلت ✅'); reload(); } catch (err) { toast(err.message); e.target.disabled = false; }
+  });
+  $('#push-test')?.addEventListener('click', async () => {
+    const r = await api('/push/test', { method: 'POST' });
+    toast(r.sent ? 'اتبعت إشعار تجربة، المفروض يوصلك دلوقتي' : 'مفيش أجهزة مفعّل عليها الإشعارات');
+  });
+
+  for (const it of data.ready) {
+    const el = main.querySelector(`.wa-card[data-target="${it.target_id}"]`);
+    let files = null;
+    const shareBtn = el.querySelector('[data-share]');
+    // Download the files ahead of time: the share sheet must open right on the tap.
+    if (shareBtn) {
+      Promise.all((it.media || []).map(async (x, i) => {
+        const blob = await (await fetch(x.url)).blob();
+        const type = blob.type || (x.type === 'video' ? 'video/mp4' : 'image/jpeg');
+        return new File([blob], `status-${it.target_id}-${i + 1}.${x.type === 'video' ? 'mp4' : 'jpg'}`, { type });
+      })).then((f) => {
+        files = f;
+        shareBtn.disabled = false;
+        shareBtn.textContent = '📤 انشر على الحالة';
+      }).catch(() => { shareBtn.textContent = 'مقدرتش أجهز الملف، حمّله'; });
+
+      shareBtn.onclick = async () => {
+        const text = it.message || '';
+        if (text) navigator.clipboard?.writeText(text).catch(() => {});
+        const payload = files.length ? { files, text } : { text };
+        try {
+          await navigator.share(payload);
+        } catch (err) {
+          if (err.name !== 'AbortError') toast('المشاركة مش شغالة هنا، حمّل الملف وانشره يدوي');
+          return;
+        }
+        if (await askConfirm('نزلت الحالة على واتساب؟', { ok: 'أيوه نزلت ✅', cancel: 'لسه' })) {
+          await api(`/whatsapp/targets/${it.target_id}/done`, { method: 'POST' });
+          toast('تمام ✅');
+          reload();
+        }
+      };
+    }
+    el.querySelector('[data-copy]')?.addEventListener('click', async () => {
+      try { await navigator.clipboard.writeText(it.message); toast('الكلام اتنسخ 📋'); } catch { toast('مقدرتش أنسخ، علّم على الكلام وانسخه'); }
+    });
+    el.querySelector('[data-done]').onclick = async () => {
+      await api(`/whatsapp/targets/${it.target_id}/done`, { method: 'POST' });
+      toast('تمام ✅');
+      reload();
+    };
+    el.querySelector('[data-skip]').onclick = async () => {
+      if (!(await askConfirm('تتخطى الحالة دي؟ مش هتظهر هنا تاني.', { ok: 'تخطي' }))) return;
+      await api(`/whatsapp/targets/${it.target_id}/skip`, { method: 'POST' });
+      reload();
+    };
+  }
 }
 
 // ---------- calendar ----------

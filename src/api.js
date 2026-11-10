@@ -1,7 +1,8 @@
 import { checkPassword, sessionCookie, clearCookie, isAuthed } from './auth.js';
 import { metaConfigured, readPending, savePending, mediaOf } from './meta.js';
 import { startVideo, putChunk, finishVideo, videoExists, MediaError } from './media.js';
-import { publishPost } from './publisher.js';
+import { publishPost, finalizePost } from './publisher.js';
+import { publicKey as pushPublicKey, subscribe as pushSubscribe, notifyAll } from './push.js';
 
 export const json = (data, status = 200, headers = {}) =>
   new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json; charset=utf-8', ...headers } });
@@ -224,6 +225,60 @@ async function route(req, env, url) {
     if (!result) throw new HttpError(404, 'انتهت صلاحية الربط (30 دقيقة). دوس "ربط فيسبوك وإنستجرام" تاني.');
     return json(result);
   }
+
+  // ---------- WhatsApp statuses (shared from the phone in one tap) ----------
+  if (path === '/accounts/whatsapp' && method === 'POST') {
+    const { client_id, name } = await body(req);
+    const client = await db.prepare('SELECT id FROM clients WHERE id = ?').bind(Number(client_id)).first();
+    if (!client) bad('العميل مش موجود');
+    const label = String(name || '').trim().slice(0, 60) || 'حالة واتساب';
+    const row = await db.prepare(
+      "INSERT INTO accounts (client_id, platform, external_id, name, picture, token_enc, created_at) VALUES (?, 'whatsapp', ?, ?, NULL, '', ?) RETURNING id"
+    ).bind(client.id, crypto.randomUUID(), label, Date.now()).first();
+    return json(row, 201);
+  }
+
+  if (path === '/whatsapp/count' && method === 'GET') {
+    const r = await db.prepare("SELECT COUNT(*) AS n FROM post_targets WHERE status = 'manual'").first();
+    return json({ count: r.n });
+  }
+
+  if (path === '/whatsapp/queue' && method === 'GET') {
+    const sel = `SELECT pt.id AS target_id, pt.status AS target_status, p.id AS post_id, p.message, p.image_url, p.media,
+        p.scheduled_at, p.created_at, a.name AS account_name, c.name AS client_name, c.color AS client_color
+      FROM post_targets pt JOIN posts p ON p.id = pt.post_id JOIN accounts a ON a.id = pt.account_id JOIN clients c ON c.id = p.client_id
+      WHERE a.platform = 'whatsapp'`;
+    const [ready, upcoming] = await db.batch([
+      db.prepare(`${sel} AND pt.status = 'manual' ORDER BY COALESCE(p.scheduled_at, p.created_at)`),
+      db.prepare(`${sel} AND pt.status = 'pending' AND p.status = 'scheduled' AND p.scheduled_at <= ? ORDER BY p.scheduled_at LIMIT 30`)
+        .bind(Date.now() + 7 * 86400000),
+    ]);
+    const shape = (r) => ({ ...r, media: mediaOf(r) });
+    return json({ ready: ready.results.map(shape), upcoming: upcoming.results.map(shape) });
+  }
+
+  let wt = path.match(/^\/whatsapp\/targets\/(\d+)\/(done|skip)$/);
+  if (wt && method === 'POST') {
+    const t = await db.prepare(
+      "SELECT pt.post_id FROM post_targets pt JOIN accounts a ON a.id = pt.account_id WHERE pt.id = ? AND a.platform = 'whatsapp' AND pt.status = 'manual'"
+    ).bind(wt[1]).first();
+    if (!t) bad('الحالة دي اتنشرت أو اتشالت خلاص');
+    if (wt[2] === 'done') {
+      await db.prepare("UPDATE post_targets SET status = 'published', error = NULL WHERE id = ?").bind(wt[1]).run();
+    } else {
+      await db.prepare("UPDATE post_targets SET status = 'failed', error = 'اتخطت (منزلتش على الحالة)' WHERE id = ?").bind(wt[1]).run();
+    }
+    return json({ ok: true, status: await finalizePost(env, t.post_id) });
+  }
+
+  // Phone notifications
+  if (path === '/push/key' && method === 'GET') return json({ publicKey: await pushPublicKey(env) });
+  if (path === '/push/subscribe' && method === 'POST') {
+    const { endpoint } = await body(req);
+    try { await pushSubscribe(env, endpoint); } catch (err) { bad(err.message); }
+    return json({ ok: true });
+  }
+  if (path === '/push/test' && method === 'POST') return json({ sent: await notifyAll(env) });
 
   // Accounts
   if (path === '/accounts' && method === 'GET') {

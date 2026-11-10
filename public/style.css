@@ -132,6 +132,19 @@ textarea { min-height: 140px; resize: vertical; }
 .platform { font-weight: 700; font-size: 12px; padding: 1px 8px; border-radius: 6px; color: #fff; }
 .platform.facebook { background: #1877f2; }
 .platform.instagram { background: linear-gradient(45deg, #f58529, #dd2a7b, #8134af); }
+.platform.whatsapp { background: #25d366; }
+.nav-badge { display: inline-block; min-width: 20px; padding: 0 6px; border-radius: 99px; background: #25d366; color: #fff; font-size: 12px; text-align: center; margin-inline-start: 4px; }
+
+/* WhatsApp statuses page */
+.wa-grid { grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); }
+.wa-card video { width: 100%; max-height: 420px; border-radius: 10px; background: #000; display: block; }
+.wa-imgs { display: grid; grid-template-columns: repeat(auto-fill, minmax(90px, 1fr)); gap: 4px; }
+.wa-imgs img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 8px; }
+.wa-imgs img:only-child { aspect-ratio: auto; max-height: 420px; object-fit: contain; background: var(--bg); }
+.wa-text { white-space: pre-wrap; word-break: break-word; margin-top: 10px; padding: 10px; background: var(--bg); border-radius: 8px; }
+.wa-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
+.wa-actions [data-share] { flex: 1 1 100%; justify-content: center; font-size: 17px; padding: 12px; background: #25d366; border-color: #25d366; }
+.wa-actions [data-share]:disabled { background: var(--muted); border-color: var(--muted); }
 
 /* Clients */
 .clients { grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); }

@@ -1,19 +1,26 @@
 import { decrypt } from './crypto.js';
 import { publishFacebook, publishInstagram, containerStatus, finishInstagram, mediaOf } from './meta.js';
 import { deleteVideo } from './media.js';
+import { notifyAll } from './push.js';
 
 const PUBLISHERS = {
   facebook: publishFacebook,
   instagram: publishInstagram,
+  // WhatsApp has no API for statuses: the post waits for you to share it in one tap.
+  whatsapp: async () => ({ manual: true }),
 };
 
 const PROCESSING_TIMEOUT = 45 * 60 * 1000; // give up on an Instagram video after 45 minutes
 const VIDEO_KEEP_DAYS = 7; // published videos are deleted from storage after this
 
 // Post status from its targets: still processing -> 'publishing'.
-async function finalizePost(env, postId) {
+export async function finalizePost(env, postId) {
   const { results } = await env.DB.prepare('SELECT status FROM post_targets WHERE post_id = ?').bind(postId).all();
   if (results.some((t) => t.status === 'processing' || t.status === 'pending')) return 'publishing';
+  if (results.some((t) => t.status === 'manual')) {
+    await env.DB.prepare("UPDATE posts SET status = 'manual' WHERE id = ?").bind(postId).run();
+    return 'manual';
+  }
   const ok = results.filter((t) => t.status === 'published').length;
   const status = results.length === 0 ? 'failed' : ok === results.length ? 'published' : ok === 0 ? 'failed' : 'partial';
   await env.DB.prepare('UPDATE posts SET status = ? WHERE id = ?').bind(status, postId).run();
@@ -35,13 +42,15 @@ export async function publishPost(env, postId) {
   ).bind(postId).all();
 
   for (const t of targets) {
-    if (t.status === 'published' || t.status === 'processing') continue;
+    if (['published', 'processing', 'manual'].includes(t.status)) continue;
     try {
       const fn = PUBLISHERS[t.platform];
       if (!fn) throw new Error('المنصة دي لسه مش مدعومة: ' + t.platform);
-      const token = await decrypt(env.SESSION_SECRET, t.token_enc);
+      const token = t.platform === 'whatsapp' ? '' : await decrypt(env.SESSION_SECRET, t.token_enc);
       const result = await fn(env, t.external_id, token, post);
-      if (result && result.pending) {
+      if (result && result.manual) {
+        await env.DB.prepare("UPDATE post_targets SET status = 'manual', error = NULL WHERE id = ?").bind(t.id).run();
+      } else if (result && result.pending) {
         await env.DB.prepare("UPDATE post_targets SET status = 'processing', external_post_id = ?, error = NULL, started_at = ? WHERE id = ?")
           .bind(String(result.pending), Date.now(), t.id).run();
       } else {
@@ -61,17 +70,20 @@ export async function runDuePosts(env) {
     "SELECT id FROM posts WHERE status = 'scheduled' AND scheduled_at <= ? ORDER BY scheduled_at LIMIT 10"
   ).bind(Date.now()).all();
 
+  let waiting = 0;
   for (const { id } of results) {
     // Claim the post first so two overlapping runs never publish it twice.
     const claim = await env.DB.prepare("UPDATE posts SET status = 'publishing' WHERE id = ? AND status = 'scheduled'").bind(id).run();
     if (!claim.meta.changes) continue;
     try {
-      await publishPost(env, id);
+      if ((await publishPost(env, id)) === 'manual') waiting++;
     } catch (err) {
       console.error('publish failed', id, err);
       await env.DB.prepare("UPDATE posts SET status = 'failed' WHERE id = ?").bind(id).run();
     }
   }
+  // WhatsApp statuses just became due: ping the phone.
+  if (waiting) await notifyAll(env).catch((err) => console.error('push failed', err));
 }
 
 // Instagram videos (and big albums) take a while to process: publish them once ready.
