@@ -174,21 +174,25 @@ function postRow(p, { actions = true } = {}) {
   const targets = p.targets.map((t) => `
     <span>${platformTag(t.platform)} ${esc(t.name)} ${t.status !== 'pending' ? badge(t.status) : ''}</span>
     ${t.error ? `<div class="target-error" style="width:100%">${esc(t.name)}: ${esc(t.error)}</div>` : ''}`).join('');
-  const canPublish = ['draft', 'scheduled', 'failed', 'partial'].includes(p.status);
+  const editable = ['draft', 'scheduled', 'failed', 'partial'].includes(p.status);
   return `
-    <div class="post" data-id="${p.id}">
+    <div class="post" data-id="${p.id}" data-series="${esc(p.series_id || '')}">
       ${p.image_url ? `<img class="thumb" src="${esc(p.image_url)}" alt="" loading="lazy">` : ''}
       <div class="body">
         <div class="meta" style="margin:0 0 4px">
           <span class="dot" style="background:${esc(p.client_color)}"></span><b>${esc(p.client_name)}</b>
           ${badge(p.status)} <span>${esc(when)}</span>
+          ${p.series_id ? '<span class="badge" title="جزء من سلسلة متكررة">🔁 متكرر</span>' : ''}
         </div>
         <div class="text">${esc(p.message) || '<span class="muted">(صورة بدون نص)</span>'}</div>
         <div class="meta">${targets}</div>
       </div>
       ${actions ? `<div class="actions">
-        ${canPublish ? `<button class="btn small" data-act="publish">${p.status === 'failed' || p.status === 'partial' ? 'إعادة المحاولة' : 'انشر دلوقتي'}</button>` : ''}
+        ${editable ? `<button class="btn small" data-act="publish">${p.status === 'failed' || p.status === 'partial' ? 'إعادة المحاولة' : 'انشر دلوقتي'}</button>` : ''}
+        ${editable ? `<a class="btn small" href="#/compose?edit=${p.id}">تعديل</a>` : ''}
+        <a class="btn small" href="#/compose?copy=${p.id}" title="انسخ المنشور لميعاد أو مواعيد تانية">نسخ / تكرار</a>
         <button class="btn small danger" data-act="delete">حذف</button>
+        ${p.series_id ? '<button class="btn small danger" data-act="delete-series" title="يحذف كل المنشورات الجاية في السلسلة دي">حذف السلسلة الجاية</button>' : ''}
       </div>` : ''}
     </div>`;
 }
@@ -196,11 +200,16 @@ function postRow(p, { actions = true } = {}) {
 function bindPostActions(root, reload) {
   root.querySelectorAll('.post [data-act]').forEach((btn) => {
     btn.onclick = async () => {
-      const id = btn.closest('.post').dataset.id;
+      const row = btn.closest('.post');
+      const id = row.dataset.id;
       if (btn.dataset.act === 'delete') {
         if (!confirm('متأكد إنك عايز تحذف المنشور ده من المنصة؟ (مش هيتمسح من فيسبوك أو إنستجرام لو كان اتنشر)')) return;
         await api(`/posts/${id}`, { method: 'DELETE' });
         toast('اتحذف');
+      } else if (btn.dataset.act === 'delete-series') {
+        if (!confirm('هيتحذف كل المنشورات اللي لسه منزلتش في السلسلة دي. اللي اتنشر خلاص مش هيتأثر. متأكد؟')) return;
+        const r = await api(`/series/${row.dataset.series}`, { method: 'DELETE' });
+        toast(`اتحذف ${r.deleted} منشور`);
       } else {
         btn.disabled = true;
         btn.textContent = 'جاري النشر…';
@@ -370,20 +379,66 @@ async function renderConnect(main, params) {
   };
 }
 
-// ---------- compose ----------
+// ---------- compose (new / edit / copy) ----------
+const pad2 = (n) => String(n).padStart(2, '0');
+const toLocalInput = (ms) => { const d = new Date(ms); return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}T${pad2(d.getHours())}:${pad2(d.getMinutes())}`; };
+const toDateInput = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+const parseDateInput = (v) => { const [y, m, d] = v.split('-').map(Number); return new Date(y, m - 1, d); };
+const WEEKDAYS = [[6, 'السبت'], [0, 'الأحد'], [1, 'الاثنين'], [2, 'الثلاثاء'], [3, 'الأربعاء'], [4, 'الخميس'], [5, 'الجمعة']];
+const MAX_SERIES = 200;
+
+// Every publish time for a repeat rule (only future times, capped at MAX_SERIES).
+function repeatTimes({ freq, interval, start, times, weekdays, endType, count, until }) {
+  const out = [];
+  if (!start || !times.length) return out;
+  const startDay = parseDateInput(start);
+  let untilMs = Infinity;
+  if (endType === 'until' && until) {
+    const u = parseDateInput(until);
+    untilMs = new Date(u.getFullYear(), u.getMonth(), u.getDate(), 23, 59).getTime();
+  }
+  const limit = endType === 'count' ? Math.min(count || 1, MAX_SERIES) : MAX_SERIES;
+  const now = Date.now();
+  const sortedTimes = [...times].sort();
+  for (let i = 0; i < 366 * 3 && out.length < limit; i++) {
+    const day = new Date(startDay.getFullYear(), startDay.getMonth(), startDay.getDate() + i);
+    let match = false;
+    if (freq === 'daily') match = i % interval === 0;
+    if (freq === 'weekly') match = weekdays.includes(day.getDay()) && Math.floor(i / 7) % interval === 0;
+    if (freq === 'monthly') {
+      const months = (day.getFullYear() - startDay.getFullYear()) * 12 + day.getMonth() - startDay.getMonth();
+      match = day.getDate() === startDay.getDate() && months % interval === 0;
+    }
+    if (!match) continue;
+    for (const t of sortedTimes) {
+      const [hh, mm] = t.split(':').map(Number);
+      const at = new Date(day.getFullYear(), day.getMonth(), day.getDate(), hh, mm).getTime();
+      if (at > untilMs) return out;
+      if (at > now && out.length < limit) out.push(at);
+    }
+  }
+  return out;
+}
+
 async function renderCompose(main, params) {
   const clients = await loadClients();
   if (!clients.length) {
     main.innerHTML = `<div class="page-head"><h1>منشور جديد</h1></div><div class="card empty">ضيف عميل الأول من <a href="#/clients">العملاء والحسابات</a>.</div>`;
     return;
   }
-  const preselect = params.get('client') || clients[0].id;
-  const pad = (n) => String(n).padStart(2, '0');
-  const soon = new Date(Date.now() + 60 * 60 * 1000);
-  const soonStr = `${soon.getFullYear()}-${pad(soon.getMonth() + 1)}-${pad(soon.getDate())}T${pad(soon.getHours())}:00`;
+  const editId = params.get('edit');
+  const copyId = params.get('copy');
+  const source = editId || copyId ? await api(`/posts/${editId || copyId}`) : null;
+  const isEdit = Boolean(editId);
+  const preselect = source ? source.client_id : params.get('client') || clients[0].id;
+  const soon = Date.now() + 60 * 60 * 1000;
+  const firstWhen = isEdit && source.scheduled_at ? source.scheduled_at : soon;
+  const title = isEdit ? 'تعديل منشور' : copyId ? 'نسخ / تكرار منشور' : 'منشور جديد';
 
   main.innerHTML = `
-    <div class="page-head"><h1>منشور جديد</h1></div>
+    <div class="page-head"><h1>${title}</h1></div>
+    ${copyId ? '<div class="notice ok">ده نسخة من منشور قديم. عدّل اللي إنت عايزه واختار المواعيد الجديدة.</div>' : ''}
+    ${isEdit && source.series_id ? '<div class="notice">المنشور ده جزء من سلسلة متكررة. التعديل هيغيّر المنشور ده بس.</div>' : ''}
     <div class="grid compose">
       <form class="card" id="compose">
         <div class="field">
@@ -396,7 +451,7 @@ async function renderCompose(main, params) {
         </div>
         <div class="field">
           <label for="p-message">نص المنشور</label>
-          <textarea id="p-message" placeholder="اكتب البوست هنا…"></textarea>
+          <textarea id="p-message" placeholder="اكتب البوست هنا…">${esc(source?.message || '')}</textarea>
           <div class="counter" id="p-count">0 حرف</div>
         </div>
         <div class="field">
@@ -405,28 +460,79 @@ async function renderCompose(main, params) {
             <input id="p-file" type="file" accept="image/*" hidden>
             <span id="p-drop-text">📷 دوس هنا واختار صورة من جهازك، أو اسحبها وسيبها هنا</span>
           </label>
-          <input id="p-image" type="url" dir="ltr" placeholder="أو حط رابط صورة: https://...jpg" style="margin-top:8px">
-          <button type="button" class="btn small danger" id="p-clear-img" hidden style="margin-top:6px">شيل الصورة</button>
+          <input id="p-image" type="url" dir="ltr" placeholder="أو حط رابط صورة: https://...jpg" style="margin-top:8px" value="${esc(source?.image_url || '')}">
+          <button type="button" class="btn small danger" id="p-clear-img" ${source?.image_url ? '' : 'hidden'} style="margin-top:6px">شيل الصورة</button>
         </div>
         <div class="field">
           <label for="p-link">رابط (لفيسبوك فقط، اختياري)</label>
-          <input id="p-link" type="url" dir="ltr" placeholder="https://">
+          <input id="p-link" type="url" dir="ltr" placeholder="https://" value="${esc(source?.link || '')}">
         </div>
         <div class="field">
           <label>النشر</label>
           <div class="modes">
-            <label><input type="radio" name="mode" value="schedule" checked> جدولة</label>
+            <label><input type="radio" name="mode" value="schedule" checked> ميعاد واحد</label>
+            ${isEdit ? '' : `
+            <label><input type="radio" name="mode" value="repeat"> 🔁 تكرار تلقائي</label>
+            <label><input type="radio" name="mode" value="dates"> 📅 مواعيد مخصوصة</label>`}
             <label><input type="radio" name="mode" value="now"> انشر دلوقتي</label>
-            <label><input type="radio" name="mode" value="draft"> احفظ مسودة</label>
+            <label><input type="radio" name="mode" value="draft"> مسودة</label>
           </div>
         </div>
-        <div class="field" id="when-wrap">
+
+        <div class="field panel" data-panel="schedule">
           <label for="p-when">الميعاد</label>
-          <input id="p-when" type="datetime-local" value="${soonStr}">
-          <div class="muted small">النشر المجدول بيتم في خلال 5 دقايق من الميعاد.</div>
+          <input id="p-when" type="datetime-local" value="${toLocalInput(firstWhen)}">
         </div>
-        <div id="p-err" class="notice bad" hidden></div>
-        <button class="btn primary" id="p-submit">حفظ</button>
+
+        <div class="panel" data-panel="repeat" hidden>
+          <div class="row">
+            <div><label for="r-freq">يتكرر</label>
+              <select id="r-freq">
+                <option value="daily">كل يوم</option>
+                <option value="weekly" selected>كل أسبوع (أيام معينة)</option>
+                <option value="monthly">كل شهر</option>
+              </select></div>
+            <div style="max-width:140px"><label for="r-interval" id="r-interval-label">كل كام أسبوع؟</label>
+              <input id="r-interval" type="number" min="1" max="12" value="1"></div>
+            <div><label for="r-start">من يوم</label>
+              <input id="r-start" type="date" value="${toDateInput(new Date())}"></div>
+          </div>
+          <div class="field" id="r-weekdays-wrap" style="margin-top:12px">
+            <label>في الأيام دي</label>
+            <div class="modes" id="r-weekdays">
+              ${WEEKDAYS.map(([v, n]) => `<label><input type="checkbox" value="${v}" ${v === new Date().getDay() ? 'checked' : ''}> ${n}</label>`).join('')}
+            </div>
+          </div>
+          <div class="muted small" id="r-monthly-note" hidden style="margin:8px 0">هينزل في نفس رقم اليوم من كل شهر (حسب "من يوم").</div>
+          <div class="field" style="margin-top:12px">
+            <label>الساعة (ممكن أكتر من ميعاد في اليوم)</label>
+            <div id="r-times" class="times"></div>
+            <button type="button" class="btn small" id="r-add-time">+ ميعاد تاني في نفس اليوم</button>
+          </div>
+          <div class="field">
+            <label>يقف إمتى؟</label>
+            <div class="modes">
+              <label><input type="radio" name="r-end" value="count" checked> بعد <input id="r-count" type="number" min="1" max="${MAX_SERIES}" value="10" style="width:70px;padding:2px 6px"> مرة</label>
+              <label><input type="radio" name="r-end" value="until"> لحد يوم <input id="r-until" type="date" style="width:auto;padding:2px 6px" value="${toDateInput(new Date(Date.now() + 30 * 86400000))}"></label>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel" data-panel="dates" hidden>
+          <div class="field">
+            <label>المواعيد</label>
+            <div id="d-list" class="times"></div>
+            <button type="button" class="btn small" id="d-add">+ ميعاد تاني</button>
+          </div>
+        </div>
+
+        <div id="p-summary"></div>
+        <div class="muted small">النشر المجدول بيتم في خلال 5 دقايق من الميعاد.</div>
+        <div id="p-err" class="notice bad" hidden style="margin-top:10px"></div>
+        <div style="display:flex;gap:8px;margin-top:12px">
+          <button class="btn primary" id="p-submit">حفظ</button>
+          ${isEdit || copyId ? '<a class="btn" href="#/posts">إلغاء</a>' : ''}
+        </div>
       </form>
       <div class="card">
         <h2>معاينة</h2>
@@ -434,18 +540,22 @@ async function renderCompose(main, params) {
       </div>
     </div>`;
 
+  // --- accounts ---
   const clientSel = $('#p-client');
+  const preChecked = source ? new Set(source.targets.map((t) => t.account_id)) : null;
   const loadAccounts = async () => {
     const box = $('#p-accounts');
     box.innerHTML = '<span class="muted small">جاري التحميل…</span>';
     const accounts = await api(`/accounts?client_id=${clientSel.value}`);
+    const sameClient = source && String(source.client_id) === clientSel.value;
     box.innerHTML = accounts.length
-      ? accounts.map((a) => `<label class="pick"><input type="checkbox" value="${a.id}" data-platform="${a.platform}" checked> ${platformTag(a.platform)} ${esc(a.name)}</label>`).join('')
+      ? accounts.map((a) => `<label class="pick"><input type="checkbox" value="${a.id}" data-platform="${a.platform}" ${!sameClient || preChecked.has(a.id) ? 'checked' : ''}> ${platformTag(a.platform)} ${esc(a.name)}</label>`).join('')
       : `<span class="muted small">العميل ده مفيش عنده حسابات مربوطة. <a href="#/clients">اربط حساباته</a></span>`;
   };
   clientSel.onchange = loadAccounts;
   await loadAccounts();
 
+  // --- preview ---
   const updatePreview = () => {
     const msg = $('#p-message').value;
     const img = $('#p-image').value.trim();
@@ -456,8 +566,10 @@ async function renderCompose(main, params) {
   };
   $('#p-message').oninput = updatePreview;
   $('#p-image').oninput = () => { $('#p-clear-img').hidden = !$('#p-image').value; updatePreview(); };
+  updatePreview();
 
-  // Image upload: convert any image to JPEG (Instagram only accepts JPEG) and shrink big photos.
+  // --- image upload ---
+  const dropIdle = '📷 دوس هنا واختار صورة من جهازك، أو اسحبها وسيبها هنا';
   const dropText = $('#p-drop-text');
   const submitBtn = $('#p-submit');
   const uploadFile = async (file) => {
@@ -474,7 +586,7 @@ async function renderCompose(main, params) {
       dropText.textContent = `✅ ${file.name}، دوس هنا لو عايز تغيّرها`;
       updatePreview();
     } catch (err) {
-      dropText.textContent = '📷 دوس هنا واختار صورة من جهازك، أو اسحبها وسيبها هنا';
+      dropText.textContent = dropIdle;
       toast(err.message);
     } finally {
       submitBtn.disabled = false;
@@ -489,50 +601,120 @@ async function renderCompose(main, params) {
     $('#p-image').value = '';
     $('#p-file').value = '';
     $('#p-clear-img').hidden = true;
-    dropText.textContent = '📷 دوس هنا واختار صورة من جهازك، أو اسحبها وسيبها هنا';
+    dropText.textContent = dropIdle;
     updatePreview();
   };
 
-  const updateMode = () => {
-    const mode = document.querySelector('input[name=mode]:checked').value;
-    $('#when-wrap').hidden = mode !== 'schedule';
-    $('#p-submit').textContent = { schedule: 'جدولة المنشور', now: 'انشر دلوقتي', draft: 'حفظ كمسودة' }[mode];
+  // --- time rows (repeat times and custom dates) ---
+  const addRow = (box, type, value) => {
+    const row = document.createElement('div');
+    row.className = 'time-row';
+    row.innerHTML = `<input type="${type}" value="${value}"><button type="button" class="btn small danger" title="شيل">✕</button>`;
+    row.querySelector('button').onclick = () => { if (box.children.length > 1) { row.remove(); refresh(); } };
+    row.querySelector('input').addEventListener('input', refresh);
+    box.appendChild(row);
   };
-  document.querySelectorAll('input[name=mode]').forEach((r) => { r.onchange = updateMode; });
-  updateMode();
+  addRow($('#r-times'), 'time', '10:00');
+  $('#r-add-time').onclick = () => { addRow($('#r-times'), 'time', '20:00'); refresh(); };
+  addRow($('#d-list'), 'datetime-local', toLocalInput(soon));
+  $('#d-add').onclick = () => {
+    const rows = [...$('#d-list').querySelectorAll('input')];
+    const last = rows.length ? new Date(rows[rows.length - 1].value).getTime() : soon;
+    addRow($('#d-list'), 'datetime-local', toLocalInput((last || soon) + 86400000));
+    refresh();
+  };
 
+  const mode = () => document.querySelector('input[name=mode]:checked').value;
+
+  // Every publish time for the current mode.
+  const collectTimes = () => {
+    const m = mode();
+    if (m === 'schedule') { const v = new Date($('#p-when').value).getTime(); return v ? [v] : []; }
+    if (m === 'dates') {
+      const vals = [...$('#d-list').querySelectorAll('input')].map((i) => new Date(i.value).getTime()).filter(Boolean);
+      return [...new Set(vals)].sort((a, b) => a - b);
+    }
+    if (m === 'repeat') {
+      return repeatTimes({
+        freq: $('#r-freq').value,
+        interval: Math.max(1, Number($('#r-interval').value) || 1),
+        start: $('#r-start').value,
+        times: [...$('#r-times').querySelectorAll('input')].map((i) => i.value).filter(Boolean),
+        weekdays: [...$('#r-weekdays').querySelectorAll('input:checked')].map((i) => Number(i.value)),
+        endType: document.querySelector('input[name=r-end]:checked').value,
+        count: Number($('#r-count').value),
+        until: $('#r-until').value,
+      });
+    }
+    return [];
+  };
+
+  function refresh() {
+    const m = mode();
+    document.querySelectorAll('.panel').forEach((p) => { p.hidden = p.dataset.panel !== m; });
+    const freq = $('#r-freq').value;
+    $('#r-weekdays-wrap').hidden = freq !== 'weekly';
+    $('#r-monthly-note').hidden = freq !== 'monthly';
+    $('#r-interval-label').textContent = { daily: 'كل كام يوم؟', weekly: 'كل كام أسبوع؟', monthly: 'كل كام شهر؟' }[freq];
+    const summary = $('#p-summary');
+    let label = { now: 'انشر دلوقتي', draft: 'حفظ كمسودة' }[m];
+    if (m === 'schedule') {
+      summary.innerHTML = '';
+      label = isEdit ? 'حفظ التعديل' : 'جدولة المنشور';
+    } else if (m === 'repeat' || m === 'dates') {
+      const times = collectTimes();
+      if (!times.length) {
+        summary.innerHTML = '<div class="notice bad">مفيش ولا ميعاد في المستقبل بالاختيارات دي.</div>';
+        label = 'جدولة';
+      } else {
+        const shown = times.slice(0, 8).map((t) => `<li>${esc(fmtDate(t))}</li>`).join('');
+        summary.innerHTML = `<div class="notice ok"><b>هيتعمل ${times.length} منشور</b>${times.length >= MAX_SERIES ? ` (الحد الأقصى ${MAX_SERIES})` : ''}، من ${esc(fmtDate(times[0]))} لحد ${esc(fmtDate(times[times.length - 1]))}<ul class="dates">${shown}${times.length > 8 ? `<li>… و${times.length - 8} كمان</li>` : ''}</ul></div>`;
+        label = `جدولة ${times.length} منشور`;
+      }
+    } else {
+      summary.innerHTML = '';
+      if (isEdit) label = m === 'now' ? 'حفظ وانشر دلوقتي' : 'حفظ كمسودة';
+    }
+    submitBtn.textContent = label;
+  }
+  main.querySelectorAll('input[name=mode], input[name=r-end], #r-freq, #r-interval, #r-start, #r-weekdays input, #r-count, #r-until, #p-when')
+    .forEach((el) => { el.addEventListener('change', refresh); el.addEventListener('input', refresh); });
+  refresh();
+
+  // --- submit ---
   $('#compose').onsubmit = async (e) => {
     e.preventDefault();
     const errBox = $('#p-err');
     errBox.hidden = true;
-    const mode = document.querySelector('input[name=mode]:checked').value;
-    const accountIds = [...document.querySelectorAll('#p-accounts input:checked')].map((i) => Number(i.value));
-    const whenVal = $('#p-when').value;
-    const btn = $('#p-submit');
-    btn.disabled = true;
+    const m = mode();
+    const times = collectTimes();
+    if (['schedule', 'repeat', 'dates'].includes(m) && !times.length) {
+      errBox.textContent = 'اختار ميعاد في المستقبل';
+      errBox.hidden = false;
+      return;
+    }
+    if (times.length > 1 && !confirm(`هيتعمل ${times.length} منشور مجدول. تمام؟`)) return;
+    const payload = {
+      client_id: Number(clientSel.value),
+      account_ids: [...document.querySelectorAll('#p-accounts input:checked')].map((i) => Number(i.value)),
+      message: $('#p-message').value,
+      image_url: $('#p-image').value.trim() || null,
+      link: $('#p-link').value.trim() || null,
+      mode: m === 'repeat' || m === 'dates' ? 'schedule' : m,
+      scheduled_times: times,
+    };
+    submitBtn.disabled = true;
     try {
-      const post = await api('/posts', {
-        method: 'POST',
-        body: {
-          client_id: Number(clientSel.value),
-          account_ids: accountIds,
-          message: $('#p-message').value,
-          image_url: $('#p-image').value.trim() || null,
-          link: $('#p-link').value.trim() || null,
-          mode,
-          scheduled_at: mode === 'schedule' && whenVal ? new Date(whenVal).getTime() : null,
-        },
-      });
-      if (mode === 'now') {
-        toast(post.status === 'published' ? 'اتنشر بنجاح' : 'فيه حسابات ماتنشرش عليها، شوف التفاصيل');
-      } else {
-        toast(mode === 'draft' ? 'اتحفظ كمسودة' : 'اتجدول بنجاح');
-      }
+      const post = await api(isEdit ? `/posts/${editId}` : '/posts', { method: isEdit ? 'PUT' : 'POST', body: payload });
+      if (m === 'now') toast(post.status === 'published' ? 'اتنشر بنجاح' : 'فيه حسابات ماتنشرش عليها، شوف التفاصيل');
+      else if (m === 'draft') toast('اتحفظ كمسودة');
+      else if (isEdit) toast('التعديل اتحفظ');
+      else toast(post.created > 1 ? `اتجدول ${post.created} منشور` : 'اتجدول بنجاح');
       location.hash = '#/posts';
     } catch (err) {
       errBox.textContent = err.message;
       errBox.hidden = false;
-      btn.disabled = false;
+      submitBtn.disabled = false;
     }
   };
 }
@@ -592,9 +774,14 @@ async function renderCalendar(main) {
     days.push(`
       <div class="day ${d.getMonth() !== month ? 'out' : ''} ${d.toDateString() === today.toDateString() ? 'today' : ''}">
         <div class="num">${d.getDate()}</div>
-        ${list.map((p) => `<span class="chip" style="background:${esc(p.client_color)}" title="${esc(p.client_name)} — ${esc(STATUS[p.status])}\n${esc(p.message)}">
-          ${new Date(p.scheduled_at || p.created_at).toLocaleTimeString('ar-EG', { hour: 'numeric', minute: '2-digit' })} ${esc(p.message.slice(0, 30) || 'صورة')}
-        </span>`).join('')}
+        ${list.map((p) => {
+          const editable = ['draft', 'scheduled', 'failed', 'partial'].includes(p.status);
+          const href = editable ? `#/compose?edit=${p.id}` : `#/compose?copy=${p.id}`;
+          const hint = editable ? 'دوس للتعديل' : 'اتنشر — دوس عشان تعمل نسخة';
+          return `<a class="chip" href="${href}" style="background:${esc(p.client_color)}" title="${esc(p.client_name)} — ${esc(STATUS[p.status])} (${hint})\n${esc(p.message)}">
+          ${p.series_id ? '🔁 ' : ''}${new Date(p.scheduled_at || p.created_at).toLocaleTimeString('ar-EG', { hour: 'numeric', minute: '2-digit' })} ${esc(p.message.slice(0, 30) || 'صورة')}
+        </a>`;
+        }).join('')}
       </div>`);
   }
 

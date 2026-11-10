@@ -48,11 +48,24 @@ const SCHEMA = [
   `CREATE INDEX IF NOT EXISTS idx_targets_post ON post_targets (post_id)`,
 ];
 
+const MIGRATIONS = [
+  'ALTER TABLE posts ADD COLUMN series_id TEXT',
+  'CREATE INDEX IF NOT EXISTS idx_posts_series ON posts (series_id)',
+];
+
 let ready = false;
 
 export async function ensureSchema(env) {
   if (ready) return;
   if (!env.DB) throw new Error('قاعدة البيانات (D1) مش مربوطة. راجع خطوة إنشاء D1 في ملف README.');
   await env.DB.batch(SCHEMA.map((s) => env.DB.prepare(s)));
+  // Columns added after the first release (CREATE TABLE IF NOT EXISTS won't add them).
+  for (const sql of MIGRATIONS) {
+    try {
+      await env.DB.prepare(sql).run();
+    } catch (err) {
+      if (!/duplicate column/i.test(String(err.message))) throw err;
+    }
+  }
   ready = true;
 }

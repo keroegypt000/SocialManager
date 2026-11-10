@@ -30,6 +30,41 @@ const POST_SELECT = `SELECT p.*, c.name AS client_name, c.color AS client_color,
 
 const parsePost = (p) => ({ ...p, targets: JSON.parse(p.targets || '[]') });
 
+const MAX_SERIES = 200;
+
+// Validates the post form (create or edit). `times` holds every publish time:
+// one for a normal scheduled post, many for a repeat or custom-dates series.
+async function readPostInput(db, b, { single = false } = {}) {
+  const clientId = Number(b.client_id);
+  const accountIds = [...new Set((b.account_ids || []).map(Number).filter(Boolean))];
+  const message = String(b.message || '').trim();
+  const imageUrl = cleanUrl(b.image_url);
+  const link = cleanUrl(b.link);
+  const mode = b.mode; // 'now' | 'schedule' | 'draft'
+  if (!clientId) bad('اختار العميل');
+  if (!accountIds.length) bad('اختار حساب واحد على الأقل');
+  if (!message && !imageUrl) bad('اكتب نص المنشور أو ضيف صورة');
+  if (!['now', 'schedule', 'draft'].includes(mode)) bad('طريقة نشر غير معروفة');
+
+  let times = [];
+  if (mode === 'schedule') {
+    const raw = Array.isArray(b.scheduled_times) ? b.scheduled_times : [b.scheduled_at];
+    times = [...new Set(raw.map(Number).filter(Boolean))].sort((x, y) => x - y);
+    if (!times.length) bad('اختار ميعاد النشر');
+    if (times[0] < Date.now() - 60000) bad('فيه ميعاد فات. كل المواعيد لازم تكون في المستقبل.');
+    if (single && times.length > 1) bad('التعديل بيكون لميعاد واحد بس');
+    if (times.length > MAX_SERIES) bad(`أقصى عدد ${MAX_SERIES} منشور في المرة الواحدة`);
+  }
+
+  const placeholders = accountIds.map(() => '?').join(',');
+  const owned = await db.prepare(`SELECT id, platform FROM accounts WHERE client_id = ? AND id IN (${placeholders})`)
+    .bind(clientId, ...accountIds).all();
+  if (owned.results.length !== accountIds.length) bad('فيه حساب مش تبع العميل ده');
+  if (!imageUrl && owned.results.some((a) => a.platform === 'instagram')) bad('إنستجرام محتاج صورة. ضيف صورة أو شيل حساب إنستجرام.');
+
+  return { clientId, accountIds, message, imageUrl, link, mode, times };
+}
+
 export async function handleApi(req, env, url) {
   try {
     return await route(req, env, url);
@@ -194,42 +229,30 @@ async function route(req, env, url) {
     return json(results.map(parsePost));
   }
 
+  // Create: one post, or a whole series (repeats / custom dates) sharing a series_id.
   if (path === '/posts' && method === 'POST') {
-    const b = await body(req);
-    const clientId = Number(b.client_id);
-    const accountIds = (b.account_ids || []).map(Number).filter(Boolean);
-    const message = String(b.message || '').trim();
-    const imageUrl = cleanUrl(b.image_url);
-    const link = cleanUrl(b.link);
-    const mode = b.mode; // 'now' | 'schedule' | 'draft'
-    if (!clientId) bad('اختار العميل');
-    if (!accountIds.length) bad('اختار حساب واحد على الأقل');
-    if (!message && !imageUrl) bad('اكتب نص المنشور أو ضيف صورة');
-    if (!['now', 'schedule', 'draft'].includes(mode)) bad('طريقة نشر غير معروفة');
+    const input = await readPostInput(db, await body(req));
+    const now = Date.now();
+    const seriesId = input.times.length > 1 ? crypto.randomUUID() : null;
+    const status = input.mode === 'draft' ? 'draft' : input.mode === 'now' ? 'publishing' : 'scheduled';
+    const slots = input.mode === 'schedule' ? input.times : [null];
 
-    let scheduledAt = null;
-    if (mode === 'schedule') {
-      scheduledAt = Number(b.scheduled_at);
-      if (!scheduledAt || scheduledAt < Date.now() - 60000) bad('اختار ميعاد في المستقبل');
+    const ids = [];
+    // D1 batches are limited, so insert in chunks.
+    for (let i = 0; i < slots.length; i += 50) {
+      const chunk = slots.slice(i, i + 50);
+      const res = await db.batch(chunk.map((at) => db.prepare(
+        'INSERT INTO posts (client_id, message, image_url, link, scheduled_at, status, created_at, series_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id'
+      ).bind(input.clientId, input.message, input.imageUrl, input.link, at, status, now, seriesId)));
+      ids.push(...res.map((r) => r.results[0].id));
     }
+    const targetStmts = ids.flatMap((pid) => input.accountIds.map((aid) =>
+      db.prepare('INSERT INTO post_targets (post_id, account_id) VALUES (?, ?)').bind(pid, aid)));
+    for (let i = 0; i < targetStmts.length; i += 90) await db.batch(targetStmts.slice(i, i + 90));
 
-    // Make sure every chosen account belongs to this client.
-    const placeholders = accountIds.map(() => '?').join(',');
-    const owned = await db.prepare(`SELECT id, platform FROM accounts WHERE client_id = ? AND id IN (${placeholders})`)
-      .bind(clientId, ...accountIds).all();
-    if (owned.results.length !== accountIds.length) bad('فيه حساب مش تبع العميل ده');
-    if (!imageUrl && owned.results.some((a) => a.platform === 'instagram')) bad('إنستجرام محتاج صورة. ضيف رابط صورة أو شيل حساب إنستجرام.');
-
-    const status = mode === 'draft' ? 'draft' : mode === 'schedule' ? 'scheduled' : 'publishing';
-    const post = await db.prepare(
-      'INSERT INTO posts (client_id, message, image_url, link, scheduled_at, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id'
-    ).bind(clientId, message, imageUrl, link, scheduledAt, status, Date.now()).first();
-    await db.batch(accountIds.map((aid) =>
-      db.prepare('INSERT INTO post_targets (post_id, account_id) VALUES (?, ?)').bind(post.id, aid)));
-
-    if (mode === 'now') await publishPost(env, post.id);
-    const saved = await db.prepare(`${POST_SELECT} WHERE p.id = ?`).bind(post.id).first();
-    return json(parsePost(saved), 201);
+    if (input.mode === 'now') await publishPost(env, ids[0]);
+    const saved = await db.prepare(`${POST_SELECT} WHERE p.id = ?`).bind(ids[0]).first();
+    return json({ ...parsePost(saved), created: ids.length }, 201);
   }
 
   m = path.match(/^\/posts\/(\d+)\/publish$/);
@@ -243,7 +266,37 @@ async function route(req, env, url) {
     return json(parsePost(saved));
   }
 
+  // Delete the upcoming (not yet published) posts of a series.
+  m = path.match(/^\/series\/([0-9a-f-]{36})$/);
+  if (m && method === 'DELETE') {
+    const r = await db.prepare("DELETE FROM posts WHERE series_id = ? AND status IN ('scheduled', 'draft') RETURNING id").bind(m[1]).all();
+    return json({ ok: true, deleted: r.results.length });
+  }
+
   m = path.match(/^\/posts\/(\d+)$/);
+  if (m && method === 'GET') {
+    const p = await db.prepare(`${POST_SELECT} WHERE p.id = ?`).bind(m[1]).first();
+    if (!p) throw new HttpError(404, 'المنشور مش موجود');
+    return json(parsePost(p));
+  }
+  // Edit a post that hasn't been published yet (only this one, not the rest of its series).
+  if (m && method === 'PUT') {
+    const existing = await db.prepare('SELECT status FROM posts WHERE id = ?').bind(m[1]).first();
+    if (!existing) throw new HttpError(404, 'المنشور مش موجود');
+    if (!['draft', 'scheduled', 'failed', 'partial'].includes(existing.status)) bad('المنشور ده اتنشر خلاص. اعمل منه نسخة بدل التعديل.');
+    const input = await readPostInput(db, await body(req), { single: true });
+    const status = input.mode === 'draft' ? 'draft' : input.mode === 'now' ? 'publishing' : 'scheduled';
+    const at = input.mode === 'schedule' ? input.times[0] : null;
+    await db.batch([
+      db.prepare('UPDATE posts SET client_id = ?, message = ?, image_url = ?, link = ?, scheduled_at = ?, status = ? WHERE id = ?')
+        .bind(input.clientId, input.message, input.imageUrl, input.link, at, status, m[1]),
+      db.prepare('DELETE FROM post_targets WHERE post_id = ?').bind(m[1]),
+      ...input.accountIds.map((aid) => db.prepare('INSERT INTO post_targets (post_id, account_id) VALUES (?, ?)').bind(m[1], aid)),
+    ]);
+    if (input.mode === 'now') await publishPost(env, Number(m[1]));
+    const saved = await db.prepare(`${POST_SELECT} WHERE p.id = ?`).bind(m[1]).first();
+    return json(parsePost(saved));
+  }
   if (m && method === 'DELETE') {
     await db.prepare('DELETE FROM posts WHERE id = ?').bind(m[1]).run();
     return json({ ok: true });
