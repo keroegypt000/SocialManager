@@ -65,6 +65,41 @@ function askConfirm(message, { ok = 'تمام', cancel = 'إلغاء' } = {}) {
   });
 }
 
+// Shows a new invite link with copy / send-on-WhatsApp buttons.
+function showInviteDialog(clientId, clientName, inv) {
+  const msg = `أهلاً ${clientName} 👋
+عشان أقدر أنشر على صفحتك على فيسبوك وإنستجرام، افتح اللينك ده من موبايلك واربط صفحتك (مش هتحتاج تبعتلي الباسورد):
+${inv.url}`;
+  const dlg = document.createElement('dialog');
+  dlg.className = 'dialog';
+  dlg.innerHTML = `<form method="dialog" class="dlg-body">
+    <div class="dlg-head"><b>🔗 لينك دعوة: ${esc(clientName)}</b><button class="btn small dlg-close" value="close">✕</button></div>
+    <p style="margin:0">ابعت اللينك ده للعميل. هيفتحه من موبايله، يدخل فيسبوك <b>بحسابه هو</b>، ويختار صفحاته، وهتلاقيها اتربطت عنده هنا.</p>
+    <input readonly dir="ltr" value="${esc(inv.url)}" onclick="this.select()">
+    <div class="dlg-actions" style="border:0;padding:0">
+      <button type="button" class="btn primary small" data-copy-link>📋 انسخ اللينك</button>
+      <a class="btn small" style="background:#25d366;border-color:#25d366;color:#fff" target="_blank" rel="noopener" href="https://wa.me/?text=${encodeURIComponent(msg)}">ابعته واتساب</a>
+      <button type="button" class="btn small" data-copy-msg>📋 انسخ الرسالة كاملة</button>
+    </div>
+    <div class="notice small" style="margin:0">⏳ اللينك شغال <b>7 أيام</b>. ⚠️ طول ما تطبيق Meta في وضع التطوير، لازم تضيف العميل <b>Tester</b> في التطبيق الأول (الخطوات في README)، وإلا فيسبوك هيرفض الدخول.</div>
+    <button type="button" class="btn small danger" data-revoke style="justify-self:start">إلغاء كل لينكات العميل ده</button>
+  </form>`;
+  document.body.appendChild(dlg);
+  const copy = async (text, done) => {
+    try { await navigator.clipboard.writeText(text); toast(done); } catch { dlg.querySelector('input').select(); toast('علّم على اللينك وانسخه'); }
+  };
+  dlg.querySelector('[data-copy-link]').onclick = () => copy(inv.url, 'اللينك اتنسخ 📋');
+  dlg.querySelector('[data-copy-msg]').onclick = () => copy(msg, 'الرسالة اتنسخت 📋');
+  dlg.querySelector('[data-revoke]').onclick = async () => {
+    if (!(await askConfirm('كل لينكات الدعوة اللي اتبعتت للعميل ده هتبطل تشتغل. الحسابات المربوطة مش هتتأثر.', { ok: 'إلغاء اللينكات' }))) return;
+    const r = await api(`/clients/${clientId}/invites`, { method: 'DELETE' });
+    toast(`اتلغى ${r.deleted} لينك`);
+    dlg.close();
+  };
+  dlg.addEventListener('close', () => dlg.remove());
+  dlg.showModal();
+}
+
 // In-page text question; resolves to the text, or null if cancelled.
 function askText(message, placeholder = '') {
   return new Promise((resolve) => {
@@ -374,6 +409,19 @@ async function renderClients(main, params) {
       renderClients(main, new URLSearchParams());
     };
   });
+  main.querySelectorAll('[data-invite]').forEach((b) => {
+    b.onclick = async () => {
+      b.disabled = true;
+      try {
+        const inv = await api(`/clients/${b.dataset.invite}/invites`, { method: 'POST' });
+        showInviteDialog(b.dataset.invite, b.dataset.name, inv);
+      } catch (err) {
+        toast(err.message);
+      } finally {
+        b.disabled = false;
+      }
+    };
+  });
   main.querySelectorAll('[data-add-wa]').forEach((b) => {
     b.onclick = async () => {
       const name = await askText('اسم لحساب واتساب ده (مثلاً رقم العميل أو اسم الموبايل):', 'واتساب المحل');
@@ -424,6 +472,7 @@ function clientCard(c, accounts, clients) {
         ${me.metaConfigured
           ? `<a class="btn primary small" href="/auth/meta/start?client_id=${c.id}">ربط فيسبوك وإنستجرام</a>`
           : '<span class="muted small">الربط هيتفعّل بعد إعداد تطبيق Meta</span>'}
+        <button class="btn small" data-invite="${c.id}" data-name="${esc(c.name)}" title="ابعت اللينك للعميل يربط صفحاته بنفسه">🔗 لينك دعوة</button>
         <button class="btn small" data-add-wa="${c.id}">+ حالة واتساب</button>
         <a class="btn small" href="#/compose?client=${c.id}">منشور جديد</a>
       </div>

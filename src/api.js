@@ -1,6 +1,7 @@
 import { checkPassword, sessionCookie, clearCookie, isAuthed } from './auth.js';
 import { metaConfigured, readPending, savePending, mediaOf } from './meta.js';
 import { startVideo, putChunk, finishVideo, videoExists, MediaError } from './media.js';
+import { createInvite, revokeInvites } from './invite.js';
 import { publishPost, finalizePost } from './publisher.js';
 import { publicKey as pushPublicKey, subscribe as pushSubscribe, notifyAll } from './push.js';
 
@@ -225,6 +226,15 @@ async function route(req, env, url) {
     if (!result) throw new HttpError(404, 'انتهت صلاحية الربط (30 دقيقة). دوس "ربط فيسبوك وإنستجرام" تاني.');
     return json(result);
   }
+
+  // Invite link for a client to connect their own pages.
+  let inv = path.match(/^\/clients\/(\d+)\/invites$/);
+  if (inv && method === 'POST') {
+    const c = await db.prepare('SELECT id FROM clients WHERE id = ?').bind(inv[1]).first();
+    if (!c) throw new HttpError(404, 'العميل مش موجود');
+    return json(await createInvite(env, c.id, url.origin), 201);
+  }
+  if (inv && method === 'DELETE') return json({ deleted: await revokeInvites(env, Number(inv[1])) });
 
   // ---------- WhatsApp statuses (shared from the phone in one tap) ----------
   if (path === '/accounts/whatsapp' && method === 'POST') {

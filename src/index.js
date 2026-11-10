@@ -4,6 +4,7 @@ import { requireSecrets, isAuthed } from './auth.js';
 import { metaStart, metaCallback } from './meta.js';
 import { runDuePosts, runProcessing, cleanupVideos } from './publisher.js';
 import { serveVideo } from './media.js';
+import { handleInvite } from './invite.js';
 
 function errorPage(message) {
   const safe = String(message).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -36,7 +37,8 @@ export default {
 
     const isApi = url.pathname.startsWith('/api/');
     const isAuth = url.pathname.startsWith('/auth/');
-    if (!isApi && !isAuth) return env.ASSETS.fetch(req);
+    const isInvite = url.pathname.startsWith('/invite/');
+    if (!isApi && !isAuth && !isInvite) return env.ASSETS.fetch(req);
 
     try {
       requireSecrets(env);
@@ -48,9 +50,13 @@ export default {
     if (isApi) return handleApi(req, env, url);
 
     try {
-      if (!(await isAuthed(req, env))) return Response.redirect(url.origin + '/', 302);
+      // Public: a client connecting their own pages with an invite link.
+      if (isInvite) return await handleInvite(req, env, url);
+      const authed = await isAuthed(req, env);
+      // The callback serves both you (logged in) and invited clients (not logged in).
+      if (url.pathname === '/auth/meta/callback') return await metaCallback(env, url, { isAdmin: authed });
+      if (!authed) return Response.redirect(url.origin + '/', 302);
       if (url.pathname === '/auth/meta/start') return await metaStart(env, url);
-      if (url.pathname === '/auth/meta/callback') return await metaCallback(env, url);
       return new Response('Not found', { status: 404 });
     } catch (err) {
       console.error(err);

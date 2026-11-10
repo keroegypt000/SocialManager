@@ -44,6 +44,14 @@ const SCHEMA = [
     payload_enc TEXT NOT NULL,
     expires_at INTEGER NOT NULL
   )`,
+  // Invite links a client opens to connect their own pages.
+  `CREATE TABLE IF NOT EXISTS invites (
+    token TEXT PRIMARY KEY,
+    client_id INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    used_at INTEGER
+  )`,
   // Small key/value store (e.g. the web-push keys, generated on first use).
   `CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
   // Phones/browsers that asked for notifications.

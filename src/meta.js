@@ -1,6 +1,7 @@
 // Meta (Facebook + Instagram) Graph API: account connection and publishing.
 import { encrypt, decrypt } from './crypto.js';
 import { makeState, readState } from './auth.js';
+import { getInvite } from './invite.js';
 
 const SCOPES = [
   'pages_show_list',
@@ -35,26 +36,45 @@ export async function graph(env, path, { method = 'GET', params = {} } = {}) {
 
 const redirectUri = (origin) => `${origin}/auth/meta/callback`;
 
-export async function metaStart(env, url) {
+// Opens Facebook's login dialog. From the dashboard: ?client_id=N (you are logged in).
+// From an invite link: { invite } (the client logs in with their own Facebook).
+export async function metaStart(env, url, { invite } = {}) {
   if (!metaConfigured(env)) throw new Error('META_APP_ID و META_APP_SECRET مش متسجلين في Cloudflare.');
-  const clientId = Number(url.searchParams.get('client_id'));
-  if (!clientId) throw new Error('client_id missing');
+  let subject;
+  if (invite) {
+    subject = `inv-${invite.token}`;
+  } else {
+    const clientId = Number(url.searchParams.get('client_id'));
+    if (!clientId) throw new Error('client_id missing');
+    subject = String(clientId);
+  }
   const dialog = new URL(`https://www.facebook.com/${version(env)}/dialog/oauth`);
   dialog.searchParams.set('client_id', env.META_APP_ID);
   dialog.searchParams.set('redirect_uri', redirectUri(url.origin));
-  dialog.searchParams.set('state', await makeState(env, clientId));
+  dialog.searchParams.set('state', await makeState(env, subject));
   dialog.searchParams.set('response_type', 'code');
   if (env.META_CONFIG_ID) dialog.searchParams.set('config_id', env.META_CONFIG_ID);
   else dialog.searchParams.set('scope', SCOPES.join(','));
   return Response.redirect(dialog.toString(), 302);
 }
 
-export async function metaCallback(env, url) {
-  const back = (q) => Response.redirect(`${url.origin}/#/clients?${q}`, 302);
+export async function metaCallback(env, url, { isAdmin = false } = {}) {
+  const subject = await readState(env, url.searchParams.get('state'));
+  let clientId = null;
+  let invite = null;
+  if (subject && subject.startsWith('inv-')) {
+    invite = await getInvite(env, subject.slice(4));
+    clientId = invite?.client_id;
+  } else if (subject && isAdmin) {
+    clientId = Number(subject);
+  }
+  // Where to send the user back: the dashboard for you, the invite page for a client.
+  const back = (q) => Response.redirect(invite ? `${url.origin}/invite/${invite.token}?${q}` : `${url.origin}/#/clients?${q}`, 302);
   if (url.searchParams.get('error')) return back('error=' + encodeURIComponent(url.searchParams.get('error_description') || 'تم إلغاء الربط'));
-
-  const clientId = await readState(env, url.searchParams.get('state'));
-  if (!clientId) return back('error=' + encodeURIComponent('انتهت صلاحية طلب الربط، جرّب تاني'));
+  if (!clientId) {
+    if (!isAdmin && !invite) return Response.redirect(`${url.origin}/`, 302);
+    return back('error=' + encodeURIComponent('انتهت صلاحية طلب الربط، جرّب تاني'));
+  }
 
   const common = { client_id: env.META_APP_ID, client_secret: env.META_APP_SECRET };
   const short = await graph(env, 'oauth/access_token', {
@@ -88,7 +108,7 @@ export async function metaCallback(env, url) {
       });
     }
   }
-  if (!items.length) return back('connected=0');
+  if (!items.length) return back(invite ? 'error=' + encodeURIComponent('مالقيناش صفحات. اتأكد إنك اخترت صفحتك في شاشة فيسبوك وإنك أدمن عليها.') : 'connected=0');
 
   const token = crypto.randomUUID();
   await env.DB.batch([
@@ -96,6 +116,7 @@ export async function metaCallback(env, url) {
     env.DB.prepare('INSERT INTO pending_links (token, client_id, payload_enc, expires_at) VALUES (?, ?, ?, ?)')
       .bind(token, clientId, await encrypt(env.SESSION_SECRET, JSON.stringify(items)), Date.now() + 30 * 60 * 1000),
   ]);
+  if (invite) return Response.redirect(`${url.origin}/invite/${invite.token}/pick?p=${token}`, 302);
   return Response.redirect(`${url.origin}/#/connect?token=${token}`, 302);
 }
 

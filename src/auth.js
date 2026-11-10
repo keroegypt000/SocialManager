@@ -39,17 +39,18 @@ export async function isAuthed(req, env) {
   return verify(env.SESSION_SECRET, 'session.' + exp, sig);
 }
 
-// OAuth "state": carries the client id and is signed so it can't be forged.
-export async function makeState(env, clientId) {
-  const data = `${clientId}.${Date.now() + 15 * 60 * 1000}`;
+// OAuth "state", signed so it can't be forged. `subject` is either a client id
+// (you connecting from the dashboard) or "inv-<token>" (a client using an invite link).
+export async function makeState(env, subject) {
+  const data = `${subject}.${Date.now() + 15 * 60 * 1000}`;
   return `${data}.${await sign(env.SESSION_SECRET, 'state.' + data)}`;
 }
 
 export async function readState(env, state) {
   const parts = String(state || '').split('.');
   if (parts.length !== 3) return null;
-  const [clientId, exp, sig] = parts;
+  const [subject, exp, sig] = parts;
   if (Number(exp) < Date.now()) return null;
-  if (!(await verify(env.SESSION_SECRET, `state.${clientId}.${exp}`, sig))) return null;
-  return Number(clientId);
+  if (!(await verify(env.SESSION_SECRET, `state.${subject}.${exp}`, sig))) return null;
+  return subject;
 }
