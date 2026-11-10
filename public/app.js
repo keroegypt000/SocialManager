@@ -20,12 +20,28 @@ const PLATFORM = { facebook: 'فيسبوك', instagram: 'إنستجرام' };
 const fmtDate = (ms) => ms ? new Date(ms).toLocaleString('ar-EG', { dateStyle: 'medium', timeStyle: 'short' }) : '';
 
 let toastTimer;
-function toast(msg) {
+// Short message at the bottom. With `undo`, shows an "تراجع" button for 10 seconds.
+function toast(msg, { undo } = {}) {
   const t = $('#toast');
   t.textContent = msg;
+  if (undo) {
+    const b = document.createElement('button');
+    b.className = 'toast-undo';
+    b.textContent = '↩ تراجع';
+    b.onclick = async () => {
+      b.disabled = true;
+      try {
+        await undo();
+        toast('رجعت زي ما كانت');
+      } catch (err) {
+        toast(err.message);
+      }
+    };
+    t.appendChild(b);
+  }
   t.hidden = false;
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { t.hidden = true; }, 3500);
+  toastTimer = setTimeout(() => { t.hidden = true; }, undo ? 10000 : 3500);
 }
 
 // In-page yes/no question. The browser's own confirm() is blocked in some
@@ -807,6 +823,7 @@ async function renderCalendar(main) {
         ${list.map((p) => `
           <div class="chip status-${esc(p.status)}" draggable="true" data-id="${p.id}" style="--c:${esc(p.client_color)}"
                title="${esc(p.client_name)} — ${esc(STATUS[p.status])}\n${esc(p.message)}">
+            <button type="button" class="chip-del" title="شيل من التقويم">✕</button>
             <span class="chip-time">${p.series_id ? '🔁 ' : ''}${fmtTime(postTime(p))}</span>
             <span class="chip-text">${esc(p.message.slice(0, 40) || '📷 صورة')}</span>
           </div>`).join('')}
@@ -824,7 +841,7 @@ async function renderCalendar(main) {
       </div>
     </div>
     <div class="muted small cal-tips">
-      دوس على منشور عشان تعدّله أو تنسخه · اسحب منشور لأي يوم عشان تنقله · اسحب وإنت ضاغط <b>Ctrl</b> عشان تعمل نسخة · دوس على <b>+</b> في أي يوم لمنشور جديد
+      دوس على منشور عشان تعدّله أو تنسخه · اسحب منشور لأي يوم عشان تنقله · اسحب وإنت ضاغط <b>Ctrl</b> عشان تعمل نسخة · <b>✕</b> على المنشور تشيله · دوس على <b>+</b> في أي يوم لمنشور جديد · لو غلطت دوس <b>تراجع</b> في الرسالة اللي تحت
     </div>
     <div class="cal-head">${weekdays.map((w) => `<div>${w}</div>`).join('')}</div>
     <div class="cal">${days.join('')}</div>
@@ -836,7 +853,23 @@ async function renderCalendar(main) {
   $('#this').onclick = () => { calMonth = null; reload(); };
 
   // Click a post -> popup. Click "+" on a day -> new post on that day.
-  main.querySelector('.cal').addEventListener('click', (e) => {
+  main.querySelector('.cal').addEventListener('click', async (e) => {
+    const del = e.target.closest('.chip-del');
+    if (del) {
+      const p = byId.get(del.closest('.chip').dataset.id);
+      const msg = p.status === 'published'
+        ? 'تشيل المنشور ده من التقويم؟ (هيفضل موجود على فيسبوك وإنستجرام، ده بيمسحه من المنصة بس)'
+        : `تشيل منشور ${fmtTime(postTime(p))} من التقويم؟ مش هيتنشر.`;
+      if (!(await askConfirm(msg, { ok: 'شيله' }))) return;
+      try {
+        await api(`/posts/${p.id}`, { method: 'DELETE' });
+        toast('اتشال من التقويم');
+        reload();
+      } catch (err) {
+        toast(err.message);
+      }
+      return;
+    }
     const chip = e.target.closest('.chip');
     if (chip) return openPostDialog(byId.get(chip.dataset.id), reload);
     if (e.target.closest('.add')) location.hash = `#/compose?date=${e.target.closest('.day').dataset.date}`;
@@ -892,14 +925,23 @@ async function renderCalendar(main) {
         note = ' (الساعة الأصلية فاتت النهارده، فاتحط بعد ربع ساعة. تقدر تغيّره من المنشور)';
       }
       try {
-        await api(`/posts/${p.id}/${copy ? 'duplicate' : 'move'}`, { method: 'POST', body: { scheduled_at: at } });
-        toast((copy ? `اتعملت نسخة يوم ${fmtDate(at)}` : `اتنقل لـ ${fmtDate(at)}`) + note);
+        const res = await api(`/posts/${p.id}/${copy ? 'duplicate' : 'move'}`, { method: 'POST', body: { scheduled_at: at } });
+        toast((copy ? `اتعملت نسخة يوم ${fmtDate(at)}` : `اتنقل لـ ${fmtDate(at)}`) + note, { undo: undoFor(p, res, copy, reload) });
         reload();
       } catch (err) {
         toast(err.message);
       }
     });
   });
+}
+
+// Undo for a calendar action: delete the copy, or put a moved post back where it was.
+function undoFor(original, result, wasCopy, reload) {
+  return async () => {
+    if (wasCopy) await api(`/posts/${result.id}`, { method: 'DELETE' });
+    else await api(`/posts/${original.id}/move`, { method: 'POST', body: { scheduled_at: postTime(original), undo_status: original.status } });
+    reload();
+  };
 }
 
 // Popup with everything you can do to one post without leaving the calendar.
@@ -984,15 +1026,15 @@ function openPostDialog(p, reload) {
       if (act === 'move') {
         return run(async () => {
           const at = new Date(dlg.querySelector('#dlg-move').value).getTime();
-          await api(`/posts/${p.id}/move`, { method: 'POST', body: { scheduled_at: at } });
-          toast(`الميعاد اتغير لـ ${fmtDate(at)}`);
+          const res = await api(`/posts/${p.id}/move`, { method: 'POST', body: { scheduled_at: at } });
+          toast(`الميعاد اتغير لـ ${fmtDate(at)}`, { undo: undoFor(p, res, false, reload) });
         });
       }
       if (act === 'copy') {
         return run(async () => {
           const at = new Date(copyInput.value).getTime();
-          await api(`/posts/${p.id}/duplicate`, { method: 'POST', body: { scheduled_at: at } });
-          toast(`اتعملت نسخة يوم ${fmtDate(at)}`);
+          const res = await api(`/posts/${p.id}/duplicate`, { method: 'POST', body: { scheduled_at: at } });
+          toast(`اتعملت نسخة يوم ${fmtDate(at)}`, { undo: undoFor(p, res, true, reload) });
         });
       }
       if (act === 'publish') {

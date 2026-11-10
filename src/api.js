@@ -269,14 +269,18 @@ async function route(req, env, url) {
   // Move a post to a new time (calendar drag or "change time").
   m = path.match(/^\/posts\/(\d+)\/move$/);
   if (m && method === 'POST') {
-    const { scheduled_at } = await body(req);
+    const { scheduled_at, undo_status } = await body(req);
     const at = Number(scheduled_at);
-    if (!at || at < Date.now() - 60000) bad('الميعاد الجديد لازم يكون في المستقبل');
+    const editable = ['draft', 'scheduled', 'failed', 'partial'];
+    // Undo puts the post back exactly as it was (time and status), even if that time has passed.
+    const undo = editable.includes(undo_status);
+    if (!at || (!undo && at < Date.now() - 60000)) bad('الميعاد الجديد لازم يكون في المستقبل');
+    if (undo && undo_status === 'scheduled' && at < Date.now() - 60000) bad('الميعاد الأصلي فات، مينفعش يرجع. غيّر الميعاد من المنشور.');
     const p = await db.prepare('SELECT status FROM posts WHERE id = ?').bind(m[1]).first();
     if (!p) throw new HttpError(404, 'المنشور مش موجود');
-    if (!['draft', 'scheduled', 'failed', 'partial'].includes(p.status)) bad('المنشور ده اتنشر خلاص، مينفعش يتنقل. اعمل منه نسخة.');
+    if (!editable.includes(p.status)) bad('المنشور ده اتنشر خلاص، مينفعش يتنقل. اعمل منه نسخة.');
     // A draft stays a draft; anything else becomes scheduled for the new time.
-    const status = p.status === 'draft' ? 'draft' : 'scheduled';
+    const status = undo ? undo_status : p.status === 'draft' ? 'draft' : 'scheduled';
     await db.prepare('UPDATE posts SET scheduled_at = ?, status = ? WHERE id = ?').bind(at, status, m[1]).run();
     const saved = await db.prepare(`${POST_SELECT} WHERE p.id = ?`).bind(m[1]).first();
     return json(parsePost(saved));
