@@ -18,7 +18,7 @@ export function metaConfigured(env) {
 }
 
 export async function graph(env, path, { method = 'GET', params = {} } = {}) {
-  const url = new URL(`https://graph.facebook.com/${version(env)}/${path}`);
+  const url = new URL(`${env.META_GRAPH_BASE || 'https://graph.facebook.com'}/${version(env)}/${path}`);
   const init = { method };
   if (method === 'GET') {
     for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
@@ -142,36 +142,134 @@ export async function savePending(env, token, keys) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// The media of a post as a list; old posts only have image_url.
+export function mediaOf(post) {
+  if (post.media) {
+    try { return typeof post.media === 'string' ? JSON.parse(post.media) : post.media; } catch { /* fall through */ }
+  }
+  return post.image_url ? [{ type: 'image', url: post.image_url }] : [];
+}
+
+// ---------- Facebook ----------
 export async function publishFacebook(env, pageId, token, post) {
-  if (post.image_url) {
-    const r = await graph(env, `${pageId}/photos`, {
-      method: 'POST',
-      params: { url: post.image_url, caption: post.message || '', access_token: token },
-    });
+  const media = mediaOf(post);
+  const video = media.find((m) => m.type === 'video');
+  const images = media.filter((m) => m.type === 'image');
+  const text = post.message || '';
+
+  if (video) return post.fb_reel ? publishFacebookReel(env, pageId, token, video.url, text) : publishFacebookVideo(env, pageId, token, video.url, text);
+
+  if (images.length > 1) {
+    // Album: upload each photo unpublished, then one post that attaches them all.
+    const ids = [];
+    for (const img of images) {
+      const r = await graph(env, `${pageId}/photos`, { method: 'POST', params: { url: img.url, published: 'false', access_token: token } });
+      ids.push(r.id);
+    }
+    const params = { message: text, access_token: token };
+    ids.forEach((id, i) => { params[`attached_media[${i}]`] = JSON.stringify({ media_fbid: id }); });
+    const r = await graph(env, `${pageId}/feed`, { method: 'POST', params });
+    return r.id;
+  }
+
+  if (images.length === 1) {
+    const r = await graph(env, `${pageId}/photos`, { method: 'POST', params: { url: images[0].url, caption: text, access_token: token } });
     return r.post_id || r.id;
   }
-  const params = { message: post.message || '', access_token: token };
+
+  const params = { message: text, access_token: token };
   if (post.link) params.link = post.link;
   const r = await graph(env, `${pageId}/feed`, { method: 'POST', params });
   return r.id;
 }
 
-export async function publishInstagram(env, igId, token, post) {
-  if (!post.image_url) throw new Error('إنستجرام محتاج صورة. ضيف رابط صورة للمنشور.');
-  const container = await graph(env, `${igId}/media`, {
-    method: 'POST',
-    params: { image_url: post.image_url, caption: post.message || '', access_token: token },
-  });
-  // Wait until Instagram finishes processing the image.
-  for (let i = 0; i < 6; i++) {
-    const s = await graph(env, container.id, { params: { fields: 'status_code', access_token: token } });
-    if (s.status_code === 'FINISHED') break;
-    if (s.status_code === 'ERROR') throw new Error('إنستجرام رفض الصورة. اتأكد إن الرابط بيفتح صورة JPG مباشرة.');
-    await sleep(2000);
-  }
-  const r = await graph(env, `${igId}/media_publish`, {
-    method: 'POST',
-    params: { creation_id: container.id, access_token: token },
-  });
+async function publishFacebookVideo(env, pageId, token, url, text) {
+  const r = await graph(env, `${pageId}/videos`, { method: 'POST', params: { file_url: url, description: text, access_token: token } });
   return r.id;
+}
+
+// Facebook Reels: start an upload session, let Facebook fetch the file from our URL, then publish.
+async function publishFacebookReel(env, pageId, token, url, text) {
+  const start = await graph(env, `${pageId}/video_reels`, { method: 'POST', params: { upload_phase: 'start', access_token: token } });
+  const base = env.META_RUPLOAD_BASE || 'https://rupload.facebook.com';
+  const res = await fetch(`${base}/video-upload/${version(env)}/${start.video_id}`, {
+    method: 'POST',
+    headers: { Authorization: `OAuth ${token}`, file_url: url },
+  });
+  const up = await res.json().catch(() => ({}));
+  if (!res.ok || up.error || up.success === false) {
+    throw new Error(up.error?.message || up.debug_info?.message || 'فيسبوك مقدرش ينزل الفيديو');
+  }
+  await graph(env, `${pageId}/video_reels`, {
+    method: 'POST',
+    params: { upload_phase: 'finish', video_id: start.video_id, video_state: 'PUBLISHED', description: text, access_token: token },
+  });
+  return start.video_id;
+}
+
+// ---------- Instagram ----------
+export async function containerStatus(env, id, token) {
+  const s = await graph(env, id, { params: { fields: 'status_code,status', access_token: token } });
+  return s;
+}
+
+async function waitForContainer(env, id, token, tries, delay) {
+  for (let i = 0; i < tries; i++) {
+    const s = await containerStatus(env, id, token);
+    if (s.status_code === 'FINISHED') return 'FINISHED';
+    if (s.status_code === 'ERROR' || s.status_code === 'EXPIRED') {
+      throw new Error(`إنستجرام رفض الملف${s.status ? `: ${s.status}` : ''}`);
+    }
+    await sleep(delay);
+  }
+  return 'IN_PROGRESS';
+}
+
+export async function finishInstagram(env, igId, token, containerId) {
+  const r = await graph(env, `${igId}/media_publish`, { method: 'POST', params: { creation_id: containerId, access_token: token } });
+  return r.id;
+}
+
+// Returns the published media id, or { pending: containerId } when a video is still
+// processing (the cron job finishes it later).
+export async function publishInstagram(env, igId, token, post) {
+  const media = mediaOf(post);
+  const video = media.find((m) => m.type === 'video');
+  const images = media.filter((m) => m.type === 'image');
+  const caption = post.message || '';
+  if (!media.length) throw new Error('إنستجرام محتاج صورة أو فيديو.');
+
+  if (video) {
+    const c = await graph(env, `${igId}/media`, {
+      method: 'POST',
+      params: { media_type: 'REELS', video_url: video.url, caption, share_to_feed: 'true', access_token: token },
+    });
+    const state = await waitForContainer(env, c.id, token, 6, 4000);
+    if (state !== 'FINISHED') return { pending: c.id };
+    return finishInstagram(env, igId, token, c.id);
+  }
+
+  if (images.length > 1) {
+    const children = [];
+    for (const img of images) {
+      const c = await graph(env, `${igId}/media`, {
+        method: 'POST',
+        params: { image_url: img.url, is_carousel_item: 'true', access_token: token },
+      });
+      children.push(c.id);
+    }
+    for (const id of children) {
+      if ((await waitForContainer(env, id, token, 8, 1500)) !== 'FINISHED') throw new Error('إنستجرام اتأخر في تجهيز الصور، جرّب تاني');
+    }
+    const album = await graph(env, `${igId}/media`, {
+      method: 'POST',
+      params: { media_type: 'CAROUSEL', children: children.join(','), caption, access_token: token },
+    });
+    if ((await waitForContainer(env, album.id, token, 8, 1500)) !== 'FINISHED') return { pending: album.id };
+    return finishInstagram(env, igId, token, album.id);
+  }
+
+  const c = await graph(env, `${igId}/media`, { method: 'POST', params: { image_url: images[0].url, caption, access_token: token } });
+  if ((await waitForContainer(env, c.id, token, 6, 2000)) !== 'FINISHED') return { pending: c.id };
+  return finishInstagram(env, igId, token, c.id);
 }

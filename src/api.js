@@ -1,5 +1,6 @@
 import { checkPassword, sessionCookie, clearCookie, isAuthed } from './auth.js';
-import { metaConfigured, readPending, savePending } from './meta.js';
+import { metaConfigured, readPending, savePending, mediaOf } from './meta.js';
+import { startVideo, putChunk, finishVideo, videoExists, MediaError } from './media.js';
 import { publishPost } from './publisher.js';
 
 export const json = (data, status = 200, headers = {}) =>
@@ -28,22 +29,42 @@ const POST_SELECT = `SELECT p.*, c.name AS client_name, c.color AS client_color,
    FROM post_targets pt JOIN accounts a ON a.id = pt.account_id WHERE pt.post_id = p.id) AS targets
   FROM posts p JOIN clients c ON c.id = p.client_id`;
 
-const parsePost = (p) => ({ ...p, targets: JSON.parse(p.targets || '[]') });
+const parsePost = (p) => ({ ...p, targets: JSON.parse(p.targets || '[]'), media: mediaOf(p) });
+
+const MAX_IMAGES = 10;
+
+// Media list from the form: up to 10 images (album) or exactly one video.
+function readMedia(b) {
+  let list = Array.isArray(b.media) ? b.media : b.image_url ? [{ type: 'image', url: b.image_url }] : [];
+  list = list.map((m) => ({ type: m.type === 'video' ? 'video' : 'image', url: cleanUrl(m.url) })).filter((m) => m.url);
+  const videos = list.filter((m) => m.type === 'video');
+  if (videos.length > 1) bad('فيديو واحد بس في المنشور');
+  if (videos.length && list.length > 1) bad('مينفعش تجمع فيديو وصور في نفس المنشور');
+  if (list.length > MAX_IMAGES) bad(`أقصى عدد ${MAX_IMAGES} صور في الألبوم`);
+  return list;
+}
 
 const MAX_SERIES = 200;
 
 // Validates the post form (create or edit). `times` holds every publish time:
 // one for a normal scheduled post, many for a repeat or custom-dates series.
-async function readPostInput(db, b, { single = false } = {}) {
+async function readPostInput(env, b, { single = false } = {}) {
+  const db = env.DB;
   const clientId = Number(b.client_id);
   const accountIds = [...new Set((b.account_ids || []).map(Number).filter(Boolean))];
   const message = String(b.message || '').trim();
-  const imageUrl = cleanUrl(b.image_url);
+  const media = readMedia(b);
+  const imageUrl = media.find((m) => m.type === 'image')?.url || null;
+  const hasVideo = media.some((m) => m.type === 'video');
+  const fbReel = hasVideo && Boolean(b.fb_reel);
   const link = cleanUrl(b.link);
   const mode = b.mode; // 'now' | 'schedule' | 'draft'
   if (!clientId) bad('اختار العميل');
   if (!accountIds.length) bad('اختار حساب واحد على الأقل');
-  if (!message && !imageUrl) bad('اكتب نص المنشور أو ضيف صورة');
+  if (!message && !media.length) bad('اكتب نص المنشور أو ضيف صورة أو فيديو');
+  for (const m of media) {
+    if (m.type === 'video' && !(await videoExists(env, m.url))) bad('الفيديو ده اتمسح من التخزين (بيتمسح بعد النشر بأسبوع). ارفعه تاني.');
+  }
   if (!['now', 'schedule', 'draft'].includes(mode)) bad('طريقة نشر غير معروفة');
 
   let times = [];
@@ -60,9 +81,9 @@ async function readPostInput(db, b, { single = false } = {}) {
   const owned = await db.prepare(`SELECT id, platform FROM accounts WHERE client_id = ? AND id IN (${placeholders})`)
     .bind(clientId, ...accountIds).all();
   if (owned.results.length !== accountIds.length) bad('فيه حساب مش تبع العميل ده');
-  if (!imageUrl && owned.results.some((a) => a.platform === 'instagram')) bad('إنستجرام محتاج صورة. ضيف صورة أو شيل حساب إنستجرام.');
+  if (!media.length && owned.results.some((a) => a.platform === 'instagram')) bad('إنستجرام محتاج صورة أو فيديو. ضيفهم أو شيل حساب إنستجرام.');
 
-  return { clientId, accountIds, message, imageUrl, link, mode, times };
+  return { clientId, accountIds, message, imageUrl, media: media.length ? JSON.stringify(media) : null, fbReel: fbReel ? 1 : 0, link, mode, times };
 }
 
 export async function handleApi(req, env, url) {
@@ -140,6 +161,24 @@ async function route(req, env, url) {
   if (m && method === 'DELETE') {
     await db.prepare('DELETE FROM clients WHERE id = ?').bind(m[1]).run();
     return json({ ok: true });
+  }
+
+  // Video upload in chunks: start -> PUT each chunk -> finish.
+  try {
+    if (path === '/media/video' && method === 'POST') {
+      if (!env.MEDIA) throw new HttpError(500, 'تخزين الميديا مش متفعّل');
+      return json(await startVideo(env, await body(req)), 201);
+    }
+    let mv = path.match(/^\/media\/video\/([0-9a-f-]{36})\/(\d+)$/);
+    if (mv && method === 'PUT') {
+      await putChunk(env, mv[1], mv[2], req);
+      return json({ ok: true });
+    }
+    mv = path.match(/^\/media\/video\/([0-9a-f-]{36})\/finish$/);
+    if (mv && method === 'POST') return json(await finishVideo(env, mv[1], url.origin));
+  } catch (err) {
+    if (err instanceof MediaError) bad(err.message);
+    throw err;
   }
 
   // Image upload. The browser already converts to JPEG and resizes, so we only check and store.
@@ -231,7 +270,7 @@ async function route(req, env, url) {
 
   // Create: one post, or a whole series (repeats / custom dates) sharing a series_id.
   if (path === '/posts' && method === 'POST') {
-    const input = await readPostInput(db, await body(req));
+    const input = await readPostInput(env, await body(req));
     const now = Date.now();
     const seriesId = input.times.length > 1 ? crypto.randomUUID() : null;
     const status = input.mode === 'draft' ? 'draft' : input.mode === 'now' ? 'publishing' : 'scheduled';
@@ -242,8 +281,8 @@ async function route(req, env, url) {
     for (let i = 0; i < slots.length; i += 50) {
       const chunk = slots.slice(i, i + 50);
       const res = await db.batch(chunk.map((at) => db.prepare(
-        'INSERT INTO posts (client_id, message, image_url, link, scheduled_at, status, created_at, series_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id'
-      ).bind(input.clientId, input.message, input.imageUrl, input.link, at, status, now, seriesId)));
+        'INSERT INTO posts (client_id, message, image_url, media, fb_reel, link, scheduled_at, status, created_at, series_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id'
+      ).bind(input.clientId, input.message, input.imageUrl, input.media, input.fbReel, input.link, at, status, now, seriesId)));
       ids.push(...res.map((r) => r.results[0].id));
     }
     const targetStmts = ids.flatMap((pid) => input.accountIds.map((aid) =>
@@ -296,9 +335,12 @@ async function route(req, env, url) {
     if (!src) throw new HttpError(404, 'المنشور مش موجود');
     const { results: targets } = await db.prepare('SELECT account_id FROM post_targets WHERE post_id = ?').bind(m[1]).all();
     if (!targets.length) bad('المنشور ده ملوش حسابات. الحسابات بتاعته اتشالت.');
+    for (const md of mediaOf(src)) {
+      if (md.type === 'video' && !(await videoExists(env, md.url))) bad('الفيديو بتاع المنشور ده اتمسح من التخزين (بيتمسح بعد النشر بأسبوع). استخدم "نسخ وتكرار" وارفعه تاني.');
+    }
     const copy = await db.prepare(
-      "INSERT INTO posts (client_id, message, image_url, link, scheduled_at, status, created_at) VALUES (?, ?, ?, ?, ?, 'scheduled', ?) RETURNING id"
-    ).bind(src.client_id, src.message, src.image_url, src.link, at, Date.now()).first();
+      "INSERT INTO posts (client_id, message, image_url, media, fb_reel, link, scheduled_at, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'scheduled', ?) RETURNING id"
+    ).bind(src.client_id, src.message, src.image_url, src.media, src.fb_reel || 0, src.link, at, Date.now()).first();
     await db.batch(targets.map((t) => db.prepare('INSERT INTO post_targets (post_id, account_id) VALUES (?, ?)').bind(copy.id, t.account_id)));
     const saved = await db.prepare(`${POST_SELECT} WHERE p.id = ?`).bind(copy.id).first();
     return json(parsePost(saved), 201);
@@ -322,12 +364,12 @@ async function route(req, env, url) {
     const existing = await db.prepare('SELECT status FROM posts WHERE id = ?').bind(m[1]).first();
     if (!existing) throw new HttpError(404, 'المنشور مش موجود');
     if (!['draft', 'scheduled', 'failed', 'partial'].includes(existing.status)) bad('المنشور ده اتنشر خلاص. اعمل منه نسخة بدل التعديل.');
-    const input = await readPostInput(db, await body(req), { single: true });
+    const input = await readPostInput(env, await body(req), { single: true });
     const status = input.mode === 'draft' ? 'draft' : input.mode === 'now' ? 'publishing' : 'scheduled';
     const at = input.mode === 'schedule' ? input.times[0] : null;
     await db.batch([
-      db.prepare('UPDATE posts SET client_id = ?, message = ?, image_url = ?, link = ?, scheduled_at = ?, status = ? WHERE id = ?')
-        .bind(input.clientId, input.message, input.imageUrl, input.link, at, status, m[1]),
+      db.prepare('UPDATE posts SET client_id = ?, message = ?, image_url = ?, media = ?, fb_reel = ?, link = ?, scheduled_at = ?, status = ?, media_cleaned = 0 WHERE id = ?')
+        .bind(input.clientId, input.message, input.imageUrl, input.media, input.fbReel, input.link, at, status, m[1]),
       db.prepare('DELETE FROM post_targets WHERE post_id = ?').bind(m[1]),
       ...input.accountIds.map((aid) => db.prepare('INSERT INTO post_targets (post_id, account_id) VALUES (?, ?)').bind(m[1], aid)),
     ]);

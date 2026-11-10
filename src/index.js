@@ -2,7 +2,8 @@ import { ensureSchema } from './db.js';
 import { handleApi, json } from './api.js';
 import { requireSecrets, isAuthed } from './auth.js';
 import { metaStart, metaCallback } from './meta.js';
-import { runDuePosts } from './publisher.js';
+import { runDuePosts, runProcessing, cleanupVideos } from './publisher.js';
+import { serveVideo } from './media.js';
 
 function errorPage(message) {
   const safe = String(message).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -14,18 +15,23 @@ function errorPage(message) {
 }
 
 export default {
-  async fetch(req, env) {
+  async fetch(req, env, ctx) {
     const url = new URL(req.url);
 
-    // Uploaded images must be public: Facebook and Instagram download them from here.
-    const media = url.pathname.match(/^\/media\/([0-9a-f-]{36}\.jpg)$/);
-    if (media) {
+    // Uploaded media must be public: Facebook and Instagram download it from here.
+    const image = url.pathname.match(/^\/media\/([0-9a-f-]{36}\.jpg)$/);
+    if (image) {
       if (!env.MEDIA) return new Response('Not found', { status: 404 });
-      const obj = await env.MEDIA.getWithMetadata(media[1], 'arrayBuffer');
+      const obj = await env.MEDIA.getWithMetadata(image[1], 'arrayBuffer');
       if (!obj.value) return new Response('Not found', { status: 404 });
       return new Response(obj.value, {
         headers: { 'Content-Type': 'image/jpeg', 'Cache-Control': 'public, max-age=31536000, immutable' },
       });
+    }
+    const video = url.pathname.match(/^\/media\/([0-9a-f-]{36})\.mp4$/);
+    if (video) {
+      if (!env.MEDIA) return new Response('Not found', { status: 404 });
+      return serveVideo(env, ctx, req, video[1]);
     }
 
     const isApi = url.pathname.startsWith('/api/');
@@ -52,14 +58,18 @@ export default {
     }
   },
 
+  // Every 5 minutes: publish due posts, finish Instagram videos that were still
+  // processing, and free storage from old published videos.
   async scheduled(event, env) {
-    try {
-      requireSecrets(env);
-      await ensureSchema(env);
-      await runDuePosts(env);
-    } catch (err) {
-      console.error('scheduled run failed:', err.message);
-      throw err;
+    requireSecrets(env);
+    await ensureSchema(env);
+    const jobs = [['due posts', runDuePosts], ['processing', runProcessing], ['video cleanup', cleanupVideos]];
+    for (const [name, job] of jobs) {
+      try {
+        await job(env);
+      } catch (err) {
+        console.error(`scheduled ${name} failed:`, err.message);
+      }
     }
   },
 };

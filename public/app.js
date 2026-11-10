@@ -14,6 +14,7 @@ const STATUS = {
   partial: 'اتنشر جزئياً',
   failed: 'فشل',
   pending: 'منتظر',
+  processing: 'إنستجرام بيجهّز الفيديو',
 };
 const PLATFORM = { facebook: 'فيسبوك', instagram: 'إنستجرام' };
 
@@ -204,6 +205,33 @@ async function loadClients() {
   return api('/clients');
 }
 
+// Message after "publish now".
+const publishMsg = (status) => ({
+  published: 'اتنشر بنجاح ✅',
+  publishing: 'اتبعت ✅ إنستجرام بيجهّز الفيديو، وهينزل لوحده خلال دقايق',
+}[status] || 'فيه حسابات ماتنشرش عليها، شوف السبب تحت المنشور');
+
+// Small media helpers shared by the posts list, calendar and popup.
+const mediaIcon = (p) => {
+  const m = p.media || [];
+  if (m.some((x) => x.type === 'video')) return '🎬 ';
+  if (m.length > 1) return `🖼️${m.length} `;
+  return '';
+};
+function thumbHtml(p) {
+  const m = p.media || [];
+  if (m.some((x) => x.type === 'video')) return '<div class="thumb-video" title="فيديو">🎬</div>';
+  if (!m.length) return '';
+  return `<div style="position:relative;flex:none"><img class="thumb" src="${esc(m[0].url)}" alt="" loading="lazy">${m.length > 1 ? `<span class="media-badge">${m.length}</span>` : ''}</div>`;
+}
+function dialogMedia(p) {
+  const m = p.media || [];
+  const v = m.find((x) => x.type === 'video');
+  if (v) return `<video src="${esc(v.url)}" controls preload="metadata" style="width:140px;border-radius:8px;background:#000"></video>`;
+  if (!m.length) return '';
+  return `<div style="position:relative"><img src="${esc(m[0].url)}" alt="">${m.length > 1 ? `<span class="media-badge">ألبوم ${m.length}</span>` : ''}</div>`;
+}
+
 function postRow(p, { actions = true } = {}) {
   const when = p.scheduled_at ? fmtDate(p.scheduled_at) : fmtDate(p.created_at);
   const targets = p.targets.map((t) => `
@@ -212,7 +240,7 @@ function postRow(p, { actions = true } = {}) {
   const editable = ['draft', 'scheduled', 'failed', 'partial'].includes(p.status);
   return `
     <div class="post" data-id="${p.id}" data-series="${esc(p.series_id || '')}">
-      ${p.image_url ? `<img class="thumb" src="${esc(p.image_url)}" alt="" loading="lazy">` : ''}
+      ${thumbHtml(p)}
       <div class="body">
         <div class="meta" style="margin:0 0 4px">
           <span class="dot" style="background:${esc(p.client_color)}"></span><b>${esc(p.client_name)}</b>
@@ -250,7 +278,7 @@ function bindPostActions(root, reload) {
         btn.textContent = 'جاري النشر…';
         try {
           const p = await api(`/posts/${id}/publish`, { method: 'POST' });
-          toast(p.status === 'published' ? 'اتنشر بنجاح' : 'فيه حسابات ماتنشرش عليها، شوف السبب تحت المنشور');
+          toast(publishMsg(p.status));
         } catch (err) {
           toast(err.message);
         }
@@ -495,13 +523,19 @@ async function renderCompose(main, params) {
           <div class="counter" id="p-count">0 حرف</div>
         </div>
         <div class="field">
-          <label>الصورة (مطلوبة لإنستجرام)</label>
+          <label>الصور أو الفيديو (مطلوبين لإنستجرام)</label>
+          <div id="p-media" class="media-list"></div>
           <label class="drop" id="p-drop" for="p-file">
-            <input id="p-file" type="file" accept="image/*" hidden>
-            <span id="p-drop-text">📷 دوس هنا واختار صورة من جهازك، أو اسحبها وسيبها هنا</span>
+            <input id="p-file" type="file" accept="image/*,video/mp4,video/quicktime,.mov" multiple hidden>
+            <span id="p-drop-text">📷🎬 دوس هنا واختار صور (لحد 10 = ألبوم) أو فيديو واحد، أو اسحبهم وسيبهم هنا</span>
           </label>
-          <input id="p-image" type="url" dir="ltr" placeholder="أو حط رابط صورة: https://...jpg" style="margin-top:8px" value="${esc(source?.image_url || '')}">
-          <button type="button" class="btn small danger" id="p-clear-img" ${source?.image_url ? '' : 'hidden'} style="margin-top:6px">شيل الصورة</button>
+          <div class="progress" id="p-progress" hidden><div></div><span></span></div>
+          <div class="time-row" id="p-url-row" style="margin-top:8px">
+            <input id="p-url" type="url" dir="ltr" placeholder="أو حط رابط صورة: https://...jpg">
+            <button type="button" class="btn small" id="p-url-add">إضافة</button>
+          </div>
+          <label class="pick" id="p-reel-wrap" hidden style="margin-top:8px"><input type="checkbox" id="p-reel"> انشر الفيديو كـ <b>Reel</b> على فيسبوك (لو مش متعلّم بينزل فيديو عادي)</label>
+          <div class="muted small" id="p-media-hint" style="margin-top:6px"></div>
         </div>
         <div class="field">
           <label for="p-link">رابط (لفيسبوك فقط، اختياري)</label>
@@ -595,55 +629,153 @@ async function renderCompose(main, params) {
   clientSel.onchange = loadAccounts;
   await loadAccounts();
 
-  // --- preview ---
-  const updatePreview = () => {
-    const msg = $('#p-message').value;
-    const img = $('#p-image').value.trim();
-    $('#p-count').textContent = `${msg.length} حرف${msg.length > 2200 ? ' (إنستجرام أقصاه 2200)' : ''}`;
-    $('#preview').innerHTML = (msg || img)
-      ? `${esc(msg)}${/^https?:\/\//.test(img) ? `<img src="${esc(img)}" alt="" onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'notice bad',textContent:'الصورة مش بتفتح من الرابط ده'}))">` : ''}`
-      : '<span class="muted">اكتب المنشور وهتظهر المعاينة هنا</span>';
-  };
-  $('#p-message').oninput = updatePreview;
-  $('#p-image').oninput = () => { $('#p-clear-img').hidden = !$('#p-image').value; updatePreview(); };
-  updatePreview();
-
-  // --- image upload ---
-  const dropIdle = '📷 دوس هنا واختار صورة من جهازك، أو اسحبها وسيبها هنا';
-  const dropText = $('#p-drop-text');
+  // --- media: up to 10 images (album) or one video ---
+  let media = source ? (source.media || []).map((m) => ({ type: m.type, url: m.url })) : [];
   const submitBtn = $('#p-submit');
-  const uploadFile = async (file) => {
-    if (!file || !file.type.startsWith('image/')) return toast('اختار ملف صورة');
-    dropText.textContent = 'جاري رفع الصورة…';
-    submitBtn.disabled = true;
-    try {
-      const jpeg = await toJpeg(file);
-      const res = await fetch('/api/media', { method: 'POST', headers: { 'Content-Type': 'image/jpeg' }, body: jpeg, credentials: 'same-origin' });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || 'فشل رفع الصورة');
-      $('#p-image').value = data.url;
-      $('#p-clear-img').hidden = false;
-      dropText.textContent = `✅ ${file.name}، دوس هنا لو عايز تغيّرها`;
-      updatePreview();
-    } catch (err) {
-      dropText.textContent = dropIdle;
-      toast(err.message);
-    } finally {
-      submitBtn.disabled = false;
+  const dropIdle = '📷🎬 دوس هنا واختار صور (لحد 10 = ألبوم) أو فيديو واحد، أو اسحبهم وسيبهم هنا';
+  const dropText = $('#p-drop-text');
+  if (source?.fb_reel) $('#p-reel').checked = true;
+
+  const renderMedia = () => {
+    const box = $('#p-media');
+    const video = media.find((m) => m.type === 'video');
+    box.innerHTML = media.map((m, i) => `
+      <div class="media-item" data-i="${i}">
+        ${m.type === 'video'
+          ? `<video src="${esc(m.url)}" muted preload="metadata"></video><span class="media-badge">🎬 فيديو${m.duration ? ` · ${Math.round(m.duration)} ث` : ''}</span>`
+          : `<img src="${esc(m.url)}" alt="" onerror="this.classList.add('broken')"><span class="media-badge">${media.length > 1 ? i + 1 : '📷'}</span>`}
+        <div class="media-tools">
+          ${m.type === 'image' && media.length > 1 ? `
+            <button type="button" class="btn small" data-mv="-1" title="قدّمها" ${i === 0 ? 'disabled' : ''}>→</button>
+            <button type="button" class="btn small" data-mv="1" title="أخّرها" ${i === media.length - 1 ? 'disabled' : ''}>←</button>` : ''}
+          <button type="button" class="btn small danger" data-rm title="شيل">✕</button>
+        </div>
+      </div>`).join('');
+    box.querySelectorAll('.media-item').forEach((el) => {
+      const i = Number(el.dataset.i);
+      el.querySelector('[data-rm]').onclick = () => { media.splice(i, 1); renderMedia(); };
+      el.querySelectorAll('[data-mv]').forEach((b) => {
+        b.onclick = () => {
+          const j = i + Number(b.dataset.mv);
+          [media[i], media[j]] = [media[j], media[i]];
+          renderMedia();
+        };
+      });
+    });
+    $('#p-reel-wrap').hidden = !video;
+    const hint = $('#p-media-hint');
+    if (video) {
+      hint.textContent = 'إنستجرام هينزله Reel (من 3 ثواني لـ 15 دقيقة). Reel فيسبوك لازم يكون طولي (9:16) ومن 3 لـ 90 ثانية، غير كده خليه فيديو عادي. الفيديو بيتمسح من التخزين بعد النشر بأسبوع.';
+    } else if (media.length > 1) {
+      hint.textContent = `ألبوم ${media.length} صور. رتّبهم بالأسهم، والأولى هي اللي بتظهر الأول.`;
+    } else {
+      hint.textContent = '';
+    }
+    $('#p-url-row').hidden = Boolean(video) || media.length >= 10;
+    $('#p-drop').hidden = Boolean(video) || media.length >= 10;
+    updatePreview();
+  };
+
+  // --- preview ---
+  function updatePreview() {
+    const msg = $('#p-message').value;
+    $('#p-count').textContent = `${msg.length} حرف${msg.length > 2200 ? ' (إنستجرام أقصاه 2200)' : ''}`;
+    let mediaHtml = '';
+    const video = media.find((m) => m.type === 'video');
+    if (video) mediaHtml = `<video src="${esc(video.url)}" controls preload="metadata"></video>`;
+    else if (media.length > 1) mediaHtml = `<div class="album">${media.map((m) => `<img src="${esc(m.url)}" alt="">`).join('')}</div>`;
+    else if (media.length === 1) mediaHtml = `<img src="${esc(media[0].url)}" alt="" onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'notice bad',textContent:'الصورة مش بتفتح من الرابط ده'}))">`;
+    $('#preview').innerHTML = (msg || media.length) ? `${esc(msg)}${mediaHtml}` : '<span class="muted">اكتب المنشور وهتظهر المعاينة هنا</span>';
+  }
+  $('#p-message').oninput = updatePreview;
+
+  // --- upload ---
+  const progress = (label, pct) => {
+    const bar = $('#p-progress');
+    bar.hidden = pct == null;
+    if (pct != null) {
+      bar.querySelector('div').style.width = `${Math.round(pct)}%`;
+      bar.querySelector('span').textContent = `${label} ${Math.round(pct)}%`;
     }
   };
-  $('#p-file').onchange = (e) => uploadFile(e.target.files[0]);
+  const uploadImage = async (file) => {
+    const jpeg = await toJpeg(file);
+    const res = await fetch('/api/media', { method: 'POST', headers: { 'Content-Type': 'image/jpeg' }, body: jpeg, credentials: 'same-origin' });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || 'فشل رفع الصورة');
+    return data.url;
+  };
+  const uploadVideo = async (file) => {
+    const info = await videoInfo(file);
+    const type = file.type || (file.name.toLowerCase().endsWith('.mov') ? 'video/quicktime' : 'video/mp4');
+    const start = await api('/media/video', { method: 'POST', body: { size: file.size, type } });
+    for (let i = 0; i < start.chunks; i++) {
+      const part = file.slice(i * start.chunkSize, Math.min(file.size, (i + 1) * start.chunkSize));
+      await putWithProgress(`/api/media/video/${start.id}/${i}`, part, (loaded) => {
+        progress('جاري رفع الفيديو', ((i * start.chunkSize + loaded) / file.size) * 100);
+      });
+    }
+    const done = await api(`/media/video/${start.id}/finish`, { method: 'POST' });
+    return { url: done.url, ...info };
+  };
+
+  const addFiles = async (files) => {
+    files = [...files].filter(Boolean);
+    if (!files.length) return;
+    const videos = files.filter((f) => f.type.startsWith('video/') || /\.(mp4|mov)$/i.test(f.name));
+    const images = files.filter((f) => f.type.startsWith('image/'));
+    if (videos.length + images.length !== files.length) return toast('فيه ملف مش صورة ولا فيديو');
+    if (videos.length > 1 || (videos.length && images.length)) return toast('اختار فيديو واحد بس، أو صور بس');
+    if (videos.length && media.length) {
+      if (!(await askConfirm('الفيديو هيشيل الصور اللي ضفتها (فيديو وصور مينفعوش في نفس المنشور). تمام؟'))) return;
+      media = [];
+    }
+    if (images.length && media.some((m) => m.type === 'video')) {
+      if (!(await askConfirm('الصور هتشيل الفيديو (فيديو وصور مينفعوش في نفس المنشور). تمام؟'))) return;
+      media = [];
+    }
+    if (images.length + media.length > 10) return toast(`أقصى عدد 10 صور. فاضل ${10 - media.length}`);
+
+    submitBtn.disabled = true;
+    try {
+      if (videos.length) {
+        const f = videos[0];
+        if (f.size > 100 * 1024 * 1024) throw new Error('الفيديو أكبر من 100 ميجا. صغّره أو قصّره الأول.');
+        progress('جاري رفع الفيديو', 0);
+        const v = await uploadVideo(f);
+        media = [{ type: 'video', ...v }];
+        $('#p-reel').checked = v.width < v.height && v.duration <= 90;
+      } else {
+        for (let i = 0; i < images.length; i++) {
+          progress(`جاري رفع الصور (${i + 1} من ${images.length})`, (i / images.length) * 100);
+          media.push({ type: 'image', url: await uploadImage(images[i]) });
+          renderMedia();
+        }
+      }
+      renderMedia();
+    } catch (err) {
+      toast(err.message);
+    } finally {
+      progress('', null);
+      submitBtn.disabled = false;
+      $('#p-file').value = '';
+      dropText.textContent = dropIdle;
+    }
+  };
+  $('#p-file').onchange = (e) => addFiles(e.target.files);
   const drop = $('#p-drop');
   drop.ondragover = (e) => { e.preventDefault(); drop.classList.add('over'); };
   drop.ondragleave = () => drop.classList.remove('over');
-  drop.ondrop = (e) => { e.preventDefault(); drop.classList.remove('over'); uploadFile(e.dataTransfer.files[0]); };
-  $('#p-clear-img').onclick = () => {
-    $('#p-image').value = '';
-    $('#p-file').value = '';
-    $('#p-clear-img').hidden = true;
-    dropText.textContent = dropIdle;
-    updatePreview();
+  drop.ondrop = (e) => { e.preventDefault(); drop.classList.remove('over'); addFiles(e.dataTransfer.files); };
+  $('#p-url-add').onclick = () => {
+    const u = $('#p-url').value.trim();
+    if (!/^https?:\/\//i.test(u)) return toast('الرابط لازم يبدأ بـ http أو https');
+    if (media.some((m) => m.type === 'video')) return toast('شيل الفيديو الأول');
+    media.push({ type: 'image', url: u });
+    $('#p-url').value = '';
+    renderMedia();
   };
+  renderMedia();
 
   // --- time rows (repeat times and custom dates) ---
   const addRow = (box, type, value) => {
@@ -738,7 +870,8 @@ async function renderCompose(main, params) {
       client_id: Number(clientSel.value),
       account_ids: [...document.querySelectorAll('#p-accounts input:checked')].map((i) => Number(i.value)),
       message: $('#p-message').value,
-      image_url: $('#p-image').value.trim() || null,
+      media: media.map((m) => ({ type: m.type, url: m.url })),
+      fb_reel: $('#p-reel').checked,
       link: $('#p-link').value.trim() || null,
       mode: m === 'repeat' || m === 'dates' ? 'schedule' : m,
       scheduled_times: times,
@@ -746,7 +879,7 @@ async function renderCompose(main, params) {
     submitBtn.disabled = true;
     try {
       const post = await api(isEdit ? `/posts/${editId}` : '/posts', { method: isEdit ? 'PUT' : 'POST', body: payload });
-      if (m === 'now') toast(post.status === 'published' ? 'اتنشر بنجاح' : 'فيه حسابات ماتنشرش عليها، شوف التفاصيل');
+      if (m === 'now') toast(publishMsg(post.status));
       else if (m === 'draft') toast('اتحفظ كمسودة');
       else if (isEdit) toast('التعديل اتحفظ');
       else toast(post.created > 1 ? `اتجدول ${post.created} منشور` : 'اتجدول بنجاح');
@@ -757,6 +890,42 @@ async function renderCompose(main, params) {
       submitBtn.disabled = false;
     }
   };
+}
+
+// Duration and size of a video file, read in the browser.
+function videoInfo(file) {
+  return new Promise((resolve, reject) => {
+    const v = document.createElement('video');
+    const url = URL.createObjectURL(file);
+    v.preload = 'metadata';
+    v.onloadedmetadata = () => {
+      const info = { duration: v.duration, width: v.videoWidth, height: v.videoHeight };
+      URL.revokeObjectURL(url);
+      if (info.duration < 3) return reject(new Error('الفيديو أقصر من 3 ثواني، إنستجرام وفيسبوك مش هيقبلوه'));
+      if (info.duration > 15 * 60) return reject(new Error('الفيديو أطول من 15 دقيقة، إنستجرام مش هيقبله'));
+      resolve(info);
+    };
+    v.onerror = () => { URL.revokeObjectURL(url); reject(new Error('مش قادر أقرا الفيديو ده. لازم يكون MP4 أو MOV.')); };
+    v.src = url;
+  });
+}
+
+// Upload one chunk with progress (fetch can't report upload progress).
+function putWithProgress(url, blob, onProgress) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('PUT', url);
+    xhr.withCredentials = true;
+    xhr.upload.onprogress = (e) => onProgress(e.loaded);
+    xhr.onload = () => {
+      let data = {};
+      try { data = JSON.parse(xhr.responseText); } catch { /* ignore */ }
+      if (xhr.status >= 200 && xhr.status < 300) resolve(data);
+      else reject(new Error(data.error || 'فشل رفع الفيديو'));
+    };
+    xhr.onerror = () => reject(new Error('النت فصل أثناء رفع الفيديو، جرّب تاني'));
+    xhr.send(blob);
+  });
 }
 
 // Re-encode an image as JPEG, max 2048px on the long side, inside Instagram's aspect-ratio limits.
@@ -825,7 +994,7 @@ async function renderCalendar(main) {
                title="${esc(p.client_name)} — ${esc(STATUS[p.status])}\n${esc(p.message)}">
             <button type="button" class="chip-del" title="شيل من التقويم">✕</button>
             <span class="chip-time">${p.series_id ? '🔁 ' : ''}${fmtTime(postTime(p))}</span>
-            <span class="chip-text">${esc(p.message.slice(0, 40) || '📷 صورة')}</span>
+            <span class="chip-text">${mediaIcon(p)}${esc(p.message.slice(0, 40) || (mediaIcon(p) ? '' : '📷 صورة'))}</span>
           </div>`).join('')}
       </div>`);
   }
@@ -963,7 +1132,7 @@ function openPostDialog(p, reload) {
       </div>
       <div class="dlg-when">🕒 ${esc(fmtDate(when))}</div>
       <div class="dlg-content">
-        ${p.image_url ? `<img src="${esc(p.image_url)}" alt="">` : ''}
+        ${dialogMedia(p)}
         <div class="dlg-text">${esc(p.message) || '<span class="muted">(صورة بدون نص)</span>'}</div>
       </div>
       <div class="meta" style="display:grid;gap:4px">${targets}</div>
@@ -1042,7 +1211,7 @@ function openPostDialog(p, reload) {
         b.textContent = 'جاري النشر…';
         return run(async () => {
           const r = await api(`/posts/${p.id}/publish`, { method: 'POST' });
-          toast(r.status === 'published' ? 'اتنشر بنجاح' : 'فيه حسابات ماتنشرش عليها');
+          toast(publishMsg(r.status));
         });
       }
       if (act === 'delete') {

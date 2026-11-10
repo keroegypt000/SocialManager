@@ -51,6 +51,12 @@ const SCHEMA = [
 const MIGRATIONS = [
   'ALTER TABLE posts ADD COLUMN series_id TEXT',
   'CREATE INDEX IF NOT EXISTS idx_posts_series ON posts (series_id)',
+  // media: JSON [{type:'image'|'video', url}], several images = album (carousel)
+  'ALTER TABLE posts ADD COLUMN media TEXT',
+  'ALTER TABLE posts ADD COLUMN fb_reel INTEGER NOT NULL DEFAULT 0',
+  'ALTER TABLE posts ADD COLUMN media_cleaned INTEGER NOT NULL DEFAULT 0',
+  // When an Instagram video started processing (status 'processing').
+  'ALTER TABLE post_targets ADD COLUMN started_at INTEGER',
 ];
 
 let ready = false;
