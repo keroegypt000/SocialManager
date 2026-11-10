@@ -1,0 +1,23 @@
+name = "social-manager"
+main = "src/index.js"
+compatibility_date = "2025-09-01"
+# Keep variables/secrets that were added from the Cloudflare dashboard.
+keep_vars = true
+
+[assets]
+directory = "./public"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+run_worker_first = ["/api/*", "/auth/*"]
+
+# The database is created automatically on the first deploy.
+[[d1_databases]]
+binding = "DB"
+database_name = "social-manager-db"
+
+# Publishes scheduled posts every 5 minutes.
+[triggers]
+crons = ["*/5 * * * *"]
+
+[observability]
+enabled = true

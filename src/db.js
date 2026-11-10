@@ -1,0 +1,51 @@
+// Database schema. Tables are created automatically on first request,
+// so there is no separate migration step to run.
+const SCHEMA = [
+  `CREATE TABLE IF NOT EXISTS clients (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    color TEXT NOT NULL DEFAULT '#4f46e5',
+    notes TEXT,
+    created_at INTEGER NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS accounts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    client_id INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+    platform TEXT NOT NULL,
+    external_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    picture TEXT,
+    token_enc TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    UNIQUE (client_id, platform, external_id)
+  )`,
+  `CREATE TABLE IF NOT EXISTS posts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    client_id INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+    message TEXT NOT NULL DEFAULT '',
+    image_url TEXT,
+    link TEXT,
+    scheduled_at INTEGER,
+    status TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS post_targets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    post_id INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+    account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    status TEXT NOT NULL DEFAULT 'pending',
+    external_post_id TEXT,
+    error TEXT
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_posts_due ON posts (status, scheduled_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_targets_post ON post_targets (post_id)`,
+];
+
+let ready = false;
+
+export async function ensureSchema(env) {
+  if (ready) return;
+  if (!env.DB) throw new Error('قاعدة البيانات (D1) مش مربوطة. راجع خطوة إنشاء D1 في ملف README.');
+  await env.DB.batch(SCHEMA.map((s) => env.DB.prepare(s)));
+  ready = true;
+}

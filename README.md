@@ -1,0 +1,93 @@
+# Social Manager
+
+منصة لإدارة صفحات العملاء على السوشيال ميديا: ربط الحسابات، كتابة المنشورات، الجدولة، والتقويم.
+شغالة على **Cloudflare Workers** (مجاني) وقاعدة بيانات **D1** (مجانية).
+
+## المرحلة الأولى (الموجودة دلوقتي)
+
+- تسجيل دخول بكلمة سر
+- إضافة العملاء (كل عميل بلون)
+- ربط صفحات **فيسبوك** وحسابات **إنستجرام Business** بزرار
+- منشور جديد: نشر فوري، جدولة، أو مسودة، على أكتر من حساب في نفس الوقت
+- النشر المجدول بيتم تلقائياً كل 5 دقايق
+- تقويم شهري لكل المنشورات
+- قايمة المنشورات بالحالة، ولو حاجة فشلت بيظهر السبب وتقدر تعيد المحاولة
+
+---
+
+## خطوات التشغيل (مرة واحدة بس)
+
+### 1. اربط GitHub بـ Cloudflare
+
+1. ادخل [dash.cloudflare.com](https://dash.cloudflare.com)
+2. من القايمة: **Compute (Workers)** ← **Workers & Pages** ← **Create**
+3. اختار **Import a repository** واربط حساب GitHub واختار `SocialManager`
+4. سيب الإعدادات زي ما هي واضغط **Deploy**
+
+Cloudflare هيعمل قاعدة البيانات لوحده في أول نشر. ومن بعدها، أي تعديل يترفع على GitHub هيتنشر تلقائي.
+
+بعد النشر هتلاقي لينك المنصة، شكله كده: `https://social-manager.<اسم-حسابك>.workers.dev`
+
+### 2. ضيف الإعدادات السرية
+
+في صفحة الـ Worker: **Settings** ← **Variables and Secrets** ← **Add**، واختار النوع **Secret** لكل واحد:
+
+| الاسم | القيمة |
+|---|---|
+| `ADMIN_PASSWORD` | كلمة السر اللي هتدخل بيها المنصة |
+| `SESSION_SECRET` | أي كلام عشوائي طويل (40 حرف أو أكتر). متغيّروش بعد ما تربط الحسابات |
+
+افتح لينك المنصة وادخل بكلمة السر. كده المنصة شغالة، وفاضل ربط فيسبوك.
+
+### 3. اعمل تطبيق Meta (عشان ربط فيسبوك وإنستجرام)
+
+1. ادخل [developers.facebook.com/apps](https://developers.facebook.com/apps) ← **Create App**
+2. اختار نوع **Business** (أو use case: **Manage everything on your Page**)
+3. ضيف منتج **Facebook Login for Business**
+4. في إعدادات Facebook Login، في خانة **Valid OAuth Redirect URIs** حط:
+   `https://<لينك-المنصة>/auth/meta/callback`
+   (اللينك بالظبط بيظهرلك في صفحة **العملاء والحسابات** جوه المنصة)
+5. من **App settings** ← **Basic** خد **App ID** و **App Secret**
+6. ضيفهم في Cloudflare كـ Secrets:
+
+| الاسم | القيمة |
+|---|---|
+| `META_APP_ID` | الـ App ID |
+| `META_APP_SECRET` | الـ App Secret |
+| `META_CONFIG_ID` | (اختياري) لو عملت Configuration في Facebook Login for Business حط الـ ID بتاعها |
+
+### 4. اربط صفحات العملاء
+
+جوه المنصة: **العملاء والحسابات** ← ضيف العميل ← **ربط فيسبوك وإنستجرام** ← اختار صفحات العميل ده بس.
+
+**مهم:**
+- لازم تكون **أدمن** على صفحات العميل (العميل يضيفك من إعدادات الصفحة).
+- إنستجرام لازم يكون حساب **Business** أو **Creator** ومربوط بصفحة الفيسبوك.
+- طول ما التطبيق في وضع **Development**، الربط بيشتغل للأشخاص اللي ليهم دور في التطبيق بس (إنت). ده كفاية لإدارة صفحات عملائك طالما إنت أدمن عليها.
+- لو حبيت عملائك يربطوا بنفسهم، لازم تقدم التطبيق لمراجعة Meta (**App Review**) على الصلاحيات:
+  `pages_show_list`, `pages_read_engagement`, `pages_manage_posts`, `instagram_basic`, `instagram_content_publish`, `business_management`
+
+---
+
+## ملاحظات
+
+- **الصور:** حالياً بتحط رابط مباشر للصورة (لازم يفتح من غير تسجيل دخول). رفع الصور من الجهاز جاي في مرحلة قادمة.
+- **التوكنز** بتاعة الصفحات متشفرة في قاعدة البيانات بـ `SESSION_SECRET`. لو غيرته، لازم تعيد ربط الحسابات.
+- **تحديث نسخة Graph API:** ممكن تضيف متغير `META_GRAPH_VERSION` (مثلاً `v23.0`).
+
+## المراحل الجاية
+
+1. واتساب: صندوق رسائل، ردود آلية، رسائل جماعية
+2. إعلانات Meta: إنشاء ومتابعة الحملات وتقارير لكل عميل
+3. رفع الصور والفيديو (Reels)
+4. تيك توك، لينكدإن، يوتيوب
+
+## التطوير المحلي (للمبرمجين)
+
+```bash
+npm install
+cp wrangler.toml wrangler.local.toml   # وضيف database_id = "local-dev" تحت database_name
+echo 'ADMIN_PASSWORD=test123' > .dev.vars
+echo 'SESSION_SECRET=local-dev-secret-change-me-123456' >> .dev.vars
+npx wrangler dev -c wrangler.local.toml
+```
