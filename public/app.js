@@ -546,11 +546,15 @@ async function renderCompose(main, params) {
     <div class="grid compose">
       <form class="card" id="compose">
         <div class="field">
+          <label>هتنشر على إيه؟</label>
+          <div class="modes platform-pick" id="p-platforms"></div>
+        </div>
+        <div class="field">
           <label for="p-client">العميل</label>
           <select id="p-client">${clients.map((c) => `<option value="${c.id}" ${String(c.id) === String(preselect) ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select>
         </div>
         <div class="field">
-          <label>هينزل على</label>
+          <label>الحسابات</label>
           <div id="p-accounts" class="account-picks"></div>
         </div>
         <div class="field">
@@ -650,20 +654,60 @@ async function renderCompose(main, params) {
       </div>
     </div>`;
 
-  // --- accounts ---
+  // --- platform choice + accounts ---
+  // "الكل" or one platform; every platform in PLATFORM shows up here automatically.
   const clientSel = $('#p-client');
   const preChecked = source ? new Set(source.targets.map((t) => t.account_id)) : null;
-  const loadAccounts = async () => {
-    const box = $('#p-accounts');
-    box.innerHTML = '<span class="muted small">جاري التحميل…</span>';
-    const accounts = await api(`/accounts?client_id=${clientSel.value}`);
-    const sameClient = source && String(source.client_id) === clientSel.value;
-    box.innerHTML = accounts.length
-      ? accounts.map((a) => `<label class="pick"><input type="checkbox" value="${a.id}" data-platform="${a.platform}" ${!sameClient || preChecked.has(a.id) ? 'checked' : ''}> ${platformTag(a.platform)} ${esc(a.name)}</label>`).join('')
-      : `<span class="muted small">العميل ده مفيش عنده حسابات مربوطة. <a href="#/clients">اربط حساباته</a></span>`;
+  let platformChoice = params.get('platform') || (source ? 'all' : (() => { try { return localStorage.getItem('sm.platform') || 'all'; } catch { return 'all'; } })());
+  if (platformChoice !== 'all' && !PLATFORM[platformChoice]) platformChoice = 'all';
+  let accounts = [];
+
+  const renderPlatforms = () => {
+    const count = (p) => accounts.filter((a) => a.platform === p).length;
+    const chips = [['all', `🌐 الكل (${accounts.length})`], ...Object.keys(PLATFORM).map((p) => [p, `${PLATFORM[p]} (${count(p)})`])];
+    $('#p-platforms').innerHTML = chips.map(([v, label]) =>
+      `<label class="${v !== 'all' ? `pf-${v}` : ''}"><input type="radio" name="platform" value="${v}" ${v === platformChoice ? 'checked' : ''}> ${esc(label)}</label>`).join('');
+    $('#p-platforms').querySelectorAll('input').forEach((r) => {
+      r.onchange = () => {
+        platformChoice = r.value;
+        try { localStorage.setItem('sm.platform', platformChoice); } catch { /* private mode */ }
+        renderAccountList();
+      };
+    });
   };
+
+  const renderAccountList = () => {
+    const box = $('#p-accounts');
+    const sameClient = source && String(source.client_id) === clientSel.value;
+    const list = platformChoice === 'all' ? accounts : accounts.filter((a) => a.platform === platformChoice);
+    if (list.length) {
+      box.innerHTML = list.map((a) => `<label class="pick"><input type="checkbox" value="${a.id}" data-platform="${a.platform}" ${!sameClient || preChecked.has(a.id) ? 'checked' : ''}> ${platformTag(a.platform)} ${esc(a.name)}</label>`).join('');
+    } else if (platformChoice === 'whatsapp') {
+      box.innerHTML = `<div class="notice">العميل ده لسه ملوش حساب "حالة واتساب". <button type="button" class="btn small primary" id="p-add-wa">+ ضيف حالة واتساب</button></div>`;
+      $('#p-add-wa').onclick = async () => {
+        const name = await askText('اسم لحساب واتساب ده (مثلاً رقم العميل أو اسم الموبايل):', 'واتساب المحل');
+        if (name === null) return;
+        await api('/accounts/whatsapp', { method: 'POST', body: { client_id: Number(clientSel.value), name } });
+        toast('اتضاف ✅');
+        await loadAccounts();
+      };
+    } else if (platformChoice === 'facebook' || platformChoice === 'instagram') {
+      box.innerHTML = `<div class="notice">العميل ده لسه مش مربوط بـ${PLATFORM[platformChoice]}.
+        ${me.metaConfigured ? `<a class="btn small primary" href="/auth/meta/start?client_id=${clientSel.value}">ربط فيسبوك وإنستجرام</a>` : ''}</div>`;
+    } else {
+      box.innerHTML = `<span class="muted small">العميل ده مفيش عنده حسابات مربوطة. <a href="#/clients">اربط حساباته</a></span>`;
+    }
+  };
+
+  async function loadAccounts() {
+    $('#p-accounts').innerHTML = '<span class="muted small">جاري التحميل…</span>';
+    accounts = await api(`/accounts?client_id=${clientSel.value}`);
+    renderPlatforms();
+    renderAccountList();
+  }
   clientSel.onchange = loadAccounts;
   await loadAccounts();
+
 
   // --- media: up to 10 images (album) or one video ---
   let media = source ? (source.media || []).map((m) => ({ type: m.type, url: m.url })) : [];
@@ -1071,7 +1115,7 @@ async function renderWhatsApp(main) {
   };
 
   main.innerHTML = `
-    <div class="page-head"><h1>📱 حالات واتساب</h1></div>
+    <div class="page-head"><h1>📱 حالات واتساب</h1><a class="btn primary" href="#/compose?platform=whatsapp">+ حالة جديدة</a></div>
     ${pushBox}
     ${!shareOk ? '<div class="notice">💡 عشان تنشر بلمسة واحدة، افتح الصفحة دي من <b>الموبايل</b> اللي عليه واتساب. من الكمبيوتر تقدر تحمّل الصورة وتنسخ الكلام.</div>' : ''}
     <h2>جاهزة للنشر ${data.ready.length ? `(${data.ready.length})` : ''}</h2>

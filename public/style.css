@@ -133,6 +133,15 @@ textarea { min-height: 140px; resize: vertical; }
 .platform.facebook { background: #1877f2; }
 .platform.instagram { background: linear-gradient(45deg, #f58529, #dd2a7b, #8134af); }
 .platform.whatsapp { background: #25d366; }
+.platform-pick label { font-weight: 600; padding: 8px 14px; }
+.platform-pick label.pf-facebook:has(input:checked) { border-color: #1877f2; background: #e7f0fe; color: #1877f2; }
+.platform-pick label.pf-instagram:has(input:checked) { border-color: #dd2a7b; background: #fdeaf3; color: #c1306b; }
+.platform-pick label.pf-whatsapp:has(input:checked) { border-color: #25d366; background: #e6f9ee; color: #128c4a; }
+@media (prefers-color-scheme: dark) {
+  .platform-pick label.pf-facebook:has(input:checked) { background: #13253f; }
+  .platform-pick label.pf-instagram:has(input:checked) { background: #3a1628; }
+  .platform-pick label.pf-whatsapp:has(input:checked) { background: #12301f; }
+}
 .nav-badge { display: inline-block; min-width: 20px; padding: 0 6px; border-radius: 99px; background: #25d366; color: #fff; font-size: 12px; text-align: center; margin-inline-start: 4px; }
 
 /* WhatsApp statuses page */
