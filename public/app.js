@@ -843,38 +843,57 @@ async function renderCalendar(main) {
   });
 
   // Drag a post to another day: move it, or copy it when Ctrl/Alt is held.
+  // Past days can't take a drop; today after the post's hour uses "in 15 minutes".
+  const todayStr = toDateInput(new Date());
+  const isPastDay = (dateStr) => dateStr < todayStr;
   let dragged = null;
+  const endDrag = () => {
+    dragged = null;
+    main.querySelector('.cal').classList.remove('dragging-on');
+    main.querySelectorAll('.drop-target').forEach((d) => d.classList.remove('drop-target'));
+  };
   main.querySelectorAll('.chip').forEach((chip) => {
     chip.addEventListener('dragstart', (e) => {
       dragged = byId.get(chip.dataset.id);
       e.dataTransfer.effectAllowed = 'copyMove';
       e.dataTransfer.setData('text/plain', chip.dataset.id);
       chip.classList.add('dragging');
+      main.querySelector('.cal').classList.add('dragging-on');
     });
-    chip.addEventListener('dragend', () => chip.classList.remove('dragging'));
+    chip.addEventListener('dragend', () => { chip.classList.remove('dragging'); endDrag(); });
   });
   main.querySelectorAll('.day').forEach((day) => {
+    if (isPastDay(day.dataset.date)) day.classList.add('past');
     day.addEventListener('dragover', (e) => {
-      if (!dragged) return;
+      if (!dragged || isPastDay(day.dataset.date)) return; // no preventDefault = drop not allowed
       e.preventDefault();
       e.dataTransfer.dropEffect = e.ctrlKey || e.altKey || e.metaKey || !EDITABLE.includes(dragged.status) ? 'copy' : 'move';
       day.classList.add('drop-target');
     });
-    day.addEventListener('dragleave', () => day.classList.remove('drop-target'));
+    day.addEventListener('dragleave', (e) => {
+      if (!day.contains(e.relatedTarget)) day.classList.remove('drop-target');
+    });
     day.addEventListener('drop', async (e) => {
       e.preventDefault();
-      day.classList.remove('drop-target');
       const p = dragged;
-      dragged = null;
+      endDrag();
       if (!p) return;
-      const at = atDay(day.dataset.date, postTime(p));
+      if (isPastDay(day.dataset.date)) return toast('اليوم ده فات. اسحب المنشور لليوم النهارده أو يوم جاي.');
       let copy = e.ctrlKey || e.altKey || e.metaKey;
       // A published post can't move, so dragging it makes a copy.
       if (!EDITABLE.includes(p.status)) copy = true;
-      if (!copy && new Date(postTime(p)).toDateString() === new Date(at).toDateString()) return;
+      let at = atDay(day.dataset.date, postTime(p));
+      const sameDay = new Date(postTime(p)).toDateString() === new Date(at).toDateString();
+      if (!copy && sameDay) return;
+      let note = '';
+      if (at < Date.now() + 5 * 60 * 1000) {
+        // Today, but that hour already passed: schedule it 15 minutes from now (rounded to 5).
+        at = Math.ceil((Date.now() + 15 * 60 * 1000) / 300000) * 300000;
+        note = ' (الساعة الأصلية فاتت النهارده، فاتحط بعد ربع ساعة. تقدر تغيّره من المنشور)';
+      }
       try {
         await api(`/posts/${p.id}/${copy ? 'duplicate' : 'move'}`, { method: 'POST', body: { scheduled_at: at } });
-        toast(copy ? `اتعملت نسخة يوم ${fmtDate(at)}` : `اتنقل ليوم ${fmtDate(at)}`);
+        toast((copy ? `اتعملت نسخة يوم ${fmtDate(at)}` : `اتنقل لـ ${fmtDate(at)}`) + note);
         reload();
       } catch (err) {
         toast(err.message);

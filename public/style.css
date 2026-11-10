@@ -165,7 +165,13 @@ ul.dates { margin: 6px 0 0; padding-inline-start: 20px; font-size: 13px; }
   display: grid; place-items: center; border-radius: 6px; color: var(--primary);
 }
 .day:hover .add { opacity: 1; background: var(--primary-soft); }
-.day.drop-target { border-color: var(--primary); background: var(--primary-soft); }
+.day.drop-target { border-color: var(--primary); background: var(--primary-soft); box-shadow: 0 0 0 2px var(--primary); }
+.day.past .add { display: none; }
+.cal.dragging-on .day.past {
+  opacity: .35;
+  background: repeating-linear-gradient(-45deg, var(--surface), var(--surface) 6px, var(--bg) 6px, var(--bg) 12px);
+  cursor: not-allowed;
+}
 .cal .chip {
   display: block; white-space: normal; padding: 3px 6px; cursor: pointer;
   background: color-mix(in srgb, var(--c) 14%, var(--surface));
