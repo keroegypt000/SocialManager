@@ -1,5 +1,5 @@
 import { checkPassword, sessionCookie, clearCookie, isAuthed } from './auth.js';
-import { metaConfigured } from './meta.js';
+import { metaConfigured, readPending, savePending } from './meta.js';
 import { publishPost } from './publisher.js';
 
 export const json = (data, status = 200, headers = {}) =>
@@ -107,6 +107,35 @@ async function route(req, env, url) {
     return json({ ok: true });
   }
 
+  // Picking which connected pages belong to a client
+  m = path.match(/^\/connect\/([0-9a-f-]{36})$/);
+  if (m && method === 'GET') {
+    const pending = await readPending(env, m[1]);
+    if (!pending) throw new HttpError(404, 'انتهت صلاحية الربط (30 دقيقة). دوس "ربط فيسبوك وإنستجرام" تاني.');
+    const { results: linked } = await db.prepare(
+      'SELECT a.platform, a.external_id, a.client_id, c.name AS client_name FROM accounts a JOIN clients c ON c.id = a.client_id'
+    ).all();
+    const owner = new Map(linked.map((l) => [`${l.platform}:${l.external_id}`, l]));
+    return json({
+      client_id: pending.clientId,
+      client_name: pending.clientName,
+      items: pending.items.map((it) => {
+        const o = owner.get(`${it.platform}:${it.external_id}`);
+        return {
+          key: `${it.platform}:${it.external_id}`, platform: it.platform, name: it.name, picture: it.picture, page_id: it.page_id,
+          linked_client_id: o?.client_id || null, linked_client_name: o?.client_name || null,
+        };
+      }),
+    });
+  }
+  if (m && method === 'POST') {
+    const { keys } = await body(req);
+    if (!Array.isArray(keys) || !keys.length) bad('اختار حساب واحد على الأقل');
+    const result = await savePending(env, m[1], keys.map(String));
+    if (!result) throw new HttpError(404, 'انتهت صلاحية الربط (30 دقيقة). دوس "ربط فيسبوك وإنستجرام" تاني.');
+    return json(result);
+  }
+
   // Accounts
   if (path === '/accounts' && method === 'GET') {
     const clientId = url.searchParams.get('client_id');
@@ -116,6 +145,20 @@ async function route(req, env, url) {
     return json((await stmt.all()).results);
   }
   m = path.match(/^\/accounts\/(\d+)$/);
+  if (m && method === 'PUT') {
+    const { client_id } = await body(req);
+    const target = await db.prepare('SELECT id FROM clients WHERE id = ?').bind(Number(client_id)).first();
+    if (!target) bad('العميل مش موجود');
+    const acc = await db.prepare('SELECT platform, external_id FROM accounts WHERE id = ?').bind(m[1]).first();
+    if (!acc) throw new HttpError(404, 'الحساب مش موجود');
+    // Drop a duplicate of the same account already sitting on the target client.
+    await db.batch([
+      db.prepare('DELETE FROM accounts WHERE client_id = ? AND platform = ? AND external_id = ? AND id != ?')
+        .bind(target.id, acc.platform, acc.external_id, m[1]),
+      db.prepare('UPDATE accounts SET client_id = ? WHERE id = ?').bind(target.id, m[1]),
+    ]);
+    return json({ ok: true });
+  }
   if (m && method === 'DELETE') {
     await db.prepare('DELETE FROM accounts WHERE id = ?').bind(m[1]).run();
     return json({ ok: true });

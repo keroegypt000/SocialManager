@@ -1,5 +1,5 @@
 // Meta (Facebook + Instagram) Graph API: account connection and publishing.
-import { encrypt } from './crypto.js';
+import { encrypt, decrypt } from './crypto.js';
 import { makeState, readState } from './auth.js';
 
 const SCOPES = [
@@ -72,21 +72,72 @@ export async function metaCallback(env, url) {
     },
   });
 
-  const now = Date.now();
-  const upsert = `INSERT INTO accounts (client_id, platform, external_id, name, picture, token_enc, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT (client_id, platform, external_id) DO UPDATE SET name = excluded.name, picture = excluded.picture, token_enc = excluded.token_enc`;
-  const stmts = [];
+  // Facebook returns every page the user manages, so we don't save them yet:
+  // the user picks which ones belong to this client on the next screen.
+  const items = [];
   for (const page of pages.data || []) {
-    const token = await encrypt(env.SESSION_SECRET, page.access_token);
-    stmts.push(env.DB.prepare(upsert).bind(clientId, 'facebook', page.id, page.name, page.picture?.data?.url || null, token, now));
+    items.push({
+      platform: 'facebook', external_id: page.id, name: page.name,
+      picture: page.picture?.data?.url || null, token: page.access_token, page_id: page.id,
+    });
     const ig = page.instagram_business_account;
     if (ig) {
-      stmts.push(env.DB.prepare(upsert).bind(clientId, 'instagram', ig.id, ig.username || page.name, ig.profile_picture_url || null, token, now));
+      items.push({
+        platform: 'instagram', external_id: ig.id, name: ig.username || page.name,
+        picture: ig.profile_picture_url || null, token: page.access_token, page_id: page.id,
+      });
     }
   }
-  if (stmts.length) await env.DB.batch(stmts);
-  return back(`connected=${stmts.length}&client=${clientId}`);
+  if (!items.length) return back('connected=0');
+
+  const token = crypto.randomUUID();
+  await env.DB.batch([
+    env.DB.prepare('DELETE FROM pending_links WHERE expires_at < ?').bind(Date.now()),
+    env.DB.prepare('INSERT INTO pending_links (token, client_id, payload_enc, expires_at) VALUES (?, ?, ?, ?)')
+      .bind(token, clientId, await encrypt(env.SESSION_SECRET, JSON.stringify(items)), Date.now() + 30 * 60 * 1000),
+  ]);
+  return Response.redirect(`${url.origin}/#/connect?token=${token}`, 302);
+}
+
+// Load a pending selection (tokens stay server-side).
+export async function readPending(env, token) {
+  const row = await env.DB.prepare(
+    'SELECT p.*, c.name AS client_name FROM pending_links p JOIN clients c ON c.id = p.client_id WHERE p.token = ? AND p.expires_at > ?'
+  ).bind(token, Date.now()).first();
+  if (!row) return null;
+  return { clientId: row.client_id, clientName: row.client_name, items: JSON.parse(await decrypt(env.SESSION_SECRET, row.payload_enc)) };
+}
+
+// Save the chosen accounts to the client. An account belongs to one client only,
+// so if it's linked to another client it is moved here.
+export async function savePending(env, token, keys) {
+  const pending = await readPending(env, token);
+  if (!pending) return null;
+  const wanted = new Set(keys);
+  const now = Date.now();
+  const stmts = [];
+  let saved = 0;
+  for (const it of pending.items) {
+    if (!wanted.has(`${it.platform}:${it.external_id}`)) continue;
+    saved++;
+    const tokenEnc = await encrypt(env.SESSION_SECRET, it.token);
+    const existing = await env.DB.prepare(
+      'SELECT id, client_id FROM accounts WHERE platform = ? AND external_id = ? ORDER BY (client_id = ?) DESC'
+    ).bind(it.platform, it.external_id, pending.clientId).all();
+    const [keep, ...dupes] = existing.results;
+    if (keep) {
+      stmts.push(env.DB.prepare('UPDATE accounts SET client_id = ?, name = ?, picture = ?, token_enc = ? WHERE id = ?')
+        .bind(pending.clientId, it.name, it.picture, tokenEnc, keep.id));
+      for (const d of dupes) stmts.push(env.DB.prepare('DELETE FROM accounts WHERE id = ?').bind(d.id));
+    } else {
+      stmts.push(env.DB.prepare(
+        'INSERT INTO accounts (client_id, platform, external_id, name, picture, token_enc, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
+      ).bind(pending.clientId, it.platform, it.external_id, it.name, it.picture, tokenEnc, now));
+    }
+  }
+  stmts.push(env.DB.prepare('DELETE FROM pending_links WHERE token = ?').bind(token));
+  await env.DB.batch(stmts);
+  return { clientId: pending.clientId, saved };
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));

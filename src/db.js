@@ -37,6 +37,13 @@ const SCHEMA = [
     external_post_id TEXT,
     error TEXT
   )`,
+  // Pages returned by Facebook, waiting for the user to pick which ones belong to the client.
+  `CREATE TABLE IF NOT EXISTS pending_links (
+    token TEXT PRIMARY KEY,
+    client_id INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+    payload_enc TEXT NOT NULL,
+    expires_at INTEGER NOT NULL
+  )`,
   `CREATE INDEX IF NOT EXISTS idx_posts_due ON posts (status, scheduled_at)`,
   `CREATE INDEX IF NOT EXISTS idx_targets_post ON post_targets (post_id)`,
 ];

@@ -63,6 +63,7 @@ const routes = {
   compose: renderCompose,
   calendar: renderCalendar,
   posts: renderPosts,
+  connect: renderConnect,
 };
 
 let me = null;
@@ -257,7 +258,7 @@ async function renderClients(main, params) {
       </div>
     </form>
     <div class="grid clients">
-      ${clients.length ? clients.map((c) => clientCard(c, accounts.filter((a) => a.client_id === c.id))).join('') : '<div class="card empty">لسه مفيش عملاء</div>'}
+      ${clients.length ? clients.map((c) => clientCard(c, accounts.filter((a) => a.client_id === c.id), clients)).join('') : '<div class="card empty">لسه مفيش عملاء</div>'}
     </div>
     <p class="muted small" style="margin-top:16px">ملحوظة: إنستجرام بيظهر هنا بس لو حساب Business أو Creator ومربوط بصفحة فيسبوك.</p>`;
 
@@ -275,6 +276,14 @@ async function renderClients(main, params) {
       renderClients(main, new URLSearchParams());
     };
   });
+  main.querySelectorAll('[data-move-account]').forEach((sel) => {
+    sel.onchange = async () => {
+      if (!sel.value) return;
+      await api(`/accounts/${sel.dataset.moveAccount}`, { method: 'PUT', body: { client_id: Number(sel.value) } });
+      toast('الحساب اتنقل');
+      renderClients(main, new URLSearchParams());
+    };
+  });
   main.querySelectorAll('[data-del-client]').forEach((b) => {
     b.onclick = async () => {
       if (!confirm('حذف العميل هيمسح كل حساباته ومنشوراته من المنصة. متأكد؟')) return;
@@ -284,7 +293,8 @@ async function renderClients(main, params) {
   });
 }
 
-function clientCard(c, accounts) {
+function clientCard(c, accounts, clients) {
+  const others = clients.filter((o) => o.id !== c.id);
   return `
     <div class="card">
       <div class="client-head">
@@ -297,6 +307,10 @@ function clientCard(c, accounts) {
           ${a.picture ? `<img src="${esc(a.picture)}" alt="">` : '<img alt="">'}
           <span class="name">${esc(a.name)}</span>
           ${platformTag(a.platform)}
+          ${others.length ? `<select class="move" data-move-account="${a.id}" title="نقل لعميل تاني">
+            <option value="">نقل ←</option>
+            ${others.map((o) => `<option value="${o.id}">${esc(o.name)}</option>`).join('')}
+          </select>` : ''}
           <button class="btn small" data-del-account="${a.id}" title="فك الربط">✕</button>
         </div>`).join('') || '<p class="muted small">مفيش حسابات مربوطة.</p>'}
       <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
@@ -306,6 +320,54 @@ function clientCard(c, accounts) {
         <a class="btn small" href="#/compose?client=${c.id}">منشور جديد</a>
       </div>
     </div>`;
+}
+
+// ---------- connect: pick which pages belong to the client ----------
+async function renderConnect(main, params) {
+  const token = params.get('token') || '';
+  const data = await api(`/connect/${encodeURIComponent(token)}`);
+  // Group each Instagram account under its Facebook page.
+  const pages = data.items.filter((i) => i.platform === 'facebook');
+  const igFor = (pageId) => data.items.filter((i) => i.platform === 'instagram' && i.page_id === pageId);
+  const row = (it) => {
+    const elsewhere = it.linked_client_id && it.linked_client_id !== data.client_id;
+    const here = it.linked_client_id === data.client_id;
+    return `
+      <label class="pick">
+        <input type="checkbox" value="${esc(it.key)}" ${here ? 'checked' : ''}>
+        ${it.picture ? `<img src="${esc(it.picture)}" alt="" style="width:28px;height:28px;border-radius:50%">` : ''}
+        ${platformTag(it.platform)} <b>${esc(it.name)}</b>
+        ${elsewhere ? `<span class="badge partial">مربوط بـ ${esc(it.linked_client_name)}، هيتنقل</span>` : ''}
+        ${here ? '<span class="badge published">مربوط بالعميل ده</span>' : ''}
+      </label>`;
+  };
+
+  main.innerHTML = `
+    <div class="page-head"><h1>اختار حسابات: ${esc(data.client_name)}</h1></div>
+    <div class="notice">فيسبوك بيبعت كل الصفحات اللي إنت أدمن عليها. علّم على صفحات <b>${esc(data.client_name)}</b> بس.</div>
+    <form class="card" id="connect-form">
+      <div class="account-picks">
+        ${pages.map((p) => row(p) + igFor(p.page_id).map((ig) => `<div style="margin-inline-start:28px">${row(ig)}</div>`).join('')).join('')}
+      </div>
+      <div id="c-err" class="notice bad" hidden style="margin-top:14px"></div>
+      <div style="display:flex;gap:8px;margin-top:16px">
+        <button class="btn primary">حفظ</button>
+        <a class="btn" href="#/clients">إلغاء</a>
+      </div>
+    </form>`;
+
+  $('#connect-form').onsubmit = async (e) => {
+    e.preventDefault();
+    const keys = [...main.querySelectorAll('#connect-form input:checked')].map((i) => i.value);
+    try {
+      const r = await api(`/connect/${encodeURIComponent(token)}`, { method: 'POST', body: { keys } });
+      location.hash = `#/clients?connected=${r.saved}`;
+    } catch (err) {
+      const box = $('#c-err');
+      box.textContent = err.message;
+      box.hidden = false;
+    }
+  };
 }
 
 // ---------- compose ----------
