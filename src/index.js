@@ -5,6 +5,7 @@ import { metaStart, metaCallback } from './meta.js';
 import { runDuePosts, runProcessing, cleanupVideos } from './publisher.js';
 import { serveVideo } from './media.js';
 import { handleInvite } from './invite.js';
+import { providerStart, providerCallback } from './providers.js';
 
 function errorPage(message) {
   const safe = String(message).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -57,6 +58,8 @@ export default {
       if (url.pathname === '/auth/meta/callback') return await metaCallback(env, url, { isAdmin: authed });
       if (!authed) return Response.redirect(url.origin + '/', 302);
       if (url.pathname === '/auth/meta/start') return await metaStart(env, url);
+      const prov = url.pathname.match(/^\/auth\/(youtube|linkedin|tiktok)\/(start|callback)$/);
+      if (prov) return await (prov[2] === 'start' ? providerStart(env, url, prov[1]) : providerCallback(env, url, prov[1]));
       return new Response('Not found', { status: 404 });
     } catch (err) {
       console.error(err);

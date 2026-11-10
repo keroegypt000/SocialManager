@@ -17,7 +17,11 @@ const STATUS = {
   pending: 'منتظر',
   processing: 'إنستجرام بيجهّز الفيديو',
 };
-const PLATFORM = { facebook: 'فيسبوك', instagram: 'إنستجرام', whatsapp: 'حالة واتساب', meta_ads: 'إعلانات Meta' };
+const PLATFORM = { facebook: 'فيسبوك', instagram: 'إنستجرام', whatsapp: 'حالة واتساب', youtube: 'يوتيوب', tiktok: 'تيك توك', linkedin: 'لينكدإن', meta_ads: 'إعلانات Meta' };
+// Platforms connected with their own login (switched on by keys in Cloudflare).
+const EXTRA = ['youtube', 'tiktok', 'linkedin'];
+const connectBtn = (p, clientId, cls = 'btn small') => (me?.providers?.[p]
+  ? `<a class="${cls}" href="/auth/${p}/start?client_id=${clientId}">ربط ${PLATFORM[p]}</a>` : '');
 // Account types you can't post to (they don't show in the composer).
 const NON_POSTING = ['meta_ads'];
 
@@ -486,6 +490,7 @@ function clientCard(c, accounts, clients) {
         ${me.metaConfigured
           ? `<a class="btn primary small" href="/auth/meta/start?client_id=${c.id}">ربط فيسبوك وإنستجرام</a>`
           : '<span class="muted small">الربط هيتفعّل بعد إعداد تطبيق Meta</span>'}
+        ${EXTRA.map((p) => connectBtn(p, c.id)).join('')}
         <button class="btn small" data-invite="${c.id}" data-name="${esc(c.name)}" title="ابعت اللينك للعميل يربط صفحاته بنفسه">🔗 لينك دعوة</button>
         <button class="btn small" data-add-wa="${c.id}">+ حالة واتساب</button>
         <a class="btn small" href="#/compose?client=${c.id}">منشور جديد</a>
@@ -755,6 +760,10 @@ async function renderCompose(main, params) {
         toast('اتضاف ✅');
         await loadAccounts();
       };
+    } else if (EXTRA.includes(platformChoice)) {
+      box.innerHTML = me?.providers?.[platformChoice]
+        ? `<div class="notice">العميل ده لسه مش مربوط بـ${PLATFORM[platformChoice]}. ${connectBtn(platformChoice, clientSel.value, 'btn small primary')}</div>`
+        : `<div class="notice">${PLATFORM[platformChoice]} لسه مش متفعّل في المنصة. محتاج تعمل تطبيق مطوّرين وتحط مفاتيحه في Cloudflare (الخطوات في README).</div>`;
     } else if (platformChoice === 'facebook' || platformChoice === 'instagram') {
       box.innerHTML = `<div class="notice">العميل ده لسه مش مربوط بـ${PLATFORM[platformChoice]}.
         ${me.metaConfigured ? `<a class="btn small primary" href="/auth/meta/start?client_id=${clientSel.value}">ربط فيسبوك وإنستجرام</a>` : ''}</div>`;

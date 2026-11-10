@@ -84,6 +84,51 @@ function sliceStream(stream, from, to) {
   }));
 }
 
+// Open one of our stored videos for re-uploading to another platform (YouTube, TikTok...).
+// Returns { size, type, stream(start, end) } where end is inclusive.
+export async function openVideo(env, url) {
+  const m = String(url).match(/\/media\/([0-9a-f-]{36})\.mp4$/);
+  if (!m) return null;
+  const id = m[1];
+  const meta = await readMeta(env, id);
+  if (!meta || !meta.done) throw new MediaError('الفيديو اتمسح من التخزين. ارفعه تاني.');
+  return {
+    size: meta.size,
+    type: meta.type,
+    stream(start = 0, end = meta.size - 1) {
+      const { readable, writable } = new TransformStream();
+      (async () => {
+        try {
+          for (let i = Math.floor(start / CHUNK); i <= Math.floor(end / CHUNK); i++) {
+            const chunkStart = i * CHUNK;
+            const body = await env.MEDIA.get(chunkKey(id, i), 'stream');
+            if (!body) throw new Error('missing chunk ' + i);
+            const from = Math.max(0, start - chunkStart);
+            const to = Math.min(CHUNK, end + 1 - chunkStart);
+            await sliceStream(body, from, to).pipeTo(writable, { preventClose: true });
+          }
+          await writable.close();
+        } catch (err) {
+          await writable.abort(err).catch(() => {});
+        }
+      })();
+      return readable;
+    },
+  };
+}
+
+// Bytes of an image: ours from KV, otherwise downloaded.
+export async function imageBytes(env, url) {
+  const m = String(url).match(/\/media\/([0-9a-f-]{36}\.jpg)$/);
+  if (m && env.MEDIA) {
+    const buf = await env.MEDIA.get(m[1], 'arrayBuffer');
+    if (buf) return { buf, type: 'image/jpeg' };
+  }
+  const res = await fetch(url);
+  if (!res.ok) throw new MediaError('مش قادر أنزّل الصورة: ' + url);
+  return { buf: await res.arrayBuffer(), type: res.headers.get('Content-Type') || 'image/jpeg' };
+}
+
 export async function serveVideo(env, ctx, req, id) {
   const meta = await readMeta(env, id);
   if (!meta || !meta.done) return new Response('Not found', { status: 404 });

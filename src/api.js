@@ -4,6 +4,7 @@ import { startVideo, putChunk, finishVideo, videoExists, MediaError } from './me
 import { createInvite, revokeInvites } from './invite.js';
 import { buildReport, createReportLink, clientForReportLink } from './reports.js';
 import { adsOverview, setCampaignStatus, boostPost, AdsError } from './ads.js';
+import { providersStatus } from './providers.js';
 import { publishPost, finalizePost } from './publisher.js';
 import { publicKey as pushPublicKey, subscribe as pushSubscribe, notifyAll } from './push.js';
 
@@ -86,6 +87,10 @@ async function readPostInput(env, b, { single = false } = {}) {
     .bind(clientId, ...accountIds).all();
   if (owned.results.length !== accountIds.length) bad('فيه حساب مش تبع العميل ده');
   if (!media.length && owned.results.some((a) => a.platform === 'instagram')) bad('إنستجرام محتاج صورة أو فيديو. ضيفهم أو شيل حساب إنستجرام.');
+  const picked = new Set(owned.results.map((a) => a.platform));
+  if (!hasVideo && (picked.has('youtube') || picked.has('tiktok'))) bad(`${picked.has('youtube') ? 'يوتيوب' : 'تيك توك'} محتاج فيديو مرفوع على المنصة. ارفع فيديو أو شيل الحساب ده.`);
+  if (hasVideo && picked.has('linkedin')) bad('لينكدإن: نشر الفيديو من المنصة لسه مش متاح. شيل لينكدإن أو استخدم صور.');
+  if (picked.has('meta_ads')) bad('حسابات الإعلانات مش بتتنشر عليها منشورات');
 
   return { clientId, accountIds, message, imageUrl, media: media.length ? JSON.stringify(media) : null, fbReel: fbReel ? 1 : 0, link, mode, times };
 }
@@ -132,7 +137,7 @@ async function route(req, env, url) {
 
   // --- authenticated routes ---
   if (path === '/me') {
-    return json({ ok: true, metaConfigured: metaConfigured(env), redirectUri: `${url.origin}/auth/meta/callback` });
+    return json({ ok: true, metaConfigured: metaConfigured(env), redirectUri: `${url.origin}/auth/meta/callback`, providers: providersStatus(env), origin: url.origin });
   }
 
   if (path === '/stats') {

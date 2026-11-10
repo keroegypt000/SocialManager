@@ -81,6 +81,44 @@ Cloudflare هيعمل قاعدة البيانات لوحده في أول نشر.
 
 لما يبقى عندك عملاء كتير، الأحسن تقدم التطبيق لمراجعة Meta (**App Review**) عشان أي حد يقدر يربط من غير ما تضيفه Tester.
 
+## التقارير والإعلانات
+
+- **📊 التقارير:** محتاجة الصلاحيات `read_insights` و `instagram_manage_insights` (اتضافوا في تطبيق Meta وفي التكوين). **لازم تربط حسابات كل عميل تاني مرة واحدة** عشان الصلاحيات الجديدة تتفعل.
+- **📢 الإعلانات:** محتاجة `ads_read` و `ads_management` (اتضافوا). لما تربط فيسبوك هتلاقي **حسابات الإعلانات** في قايمة الاختيار، علّم على حساب إعلانات العميل.
+  - صلاحية حساب الإعلانات بتنتهي كل حوالي **60 يوم**، ولما تنتهي الصفحة هتقولك "اربط تاني".
+  - زرار **📢 روّج** بيعمل الإعلان **متوقف**، ومبيصرفش غير لما تشغّله من صفحة الإعلانات.
+
+## يوتيوب ولينكدإن وتيك توك
+
+كل منصة بتشتغل لوحدها أول ما تحط مفاتيحها في Cloudflare (**Settings ← Runtime variables and secrets ← Add ← Secret**). لحد ما تحطها، المنصة بتظهر في "هتنشر على إيه؟" بس مكتوب إنها مش متفعّلة.
+
+### يوتيوب (فيديو بس)
+1. [console.cloud.google.com](https://console.cloud.google.com) ← مشروع جديد
+2. **APIs & Services ← Library** ← فعّل **YouTube Data API v3**
+3. **OAuth consent screen** ← External ← ضيف إيميلك وإيميلات العملاء في **Test users**
+4. **Credentials ← Create credentials ← OAuth client ID ← Web application**
+   - Authorized redirect URI: `https://socialmanager.fairman200818.workers.dev/auth/youtube/callback`
+5. حط في Cloudflare: `GOOGLE_CLIENT_ID` و `GOOGLE_CLIENT_SECRET`
+
+⚠️ جوجل بيخلي الفيديوهات اللي بتترفع من تطبيق **لسه متراجعش** تنزل **Private**. عشان تنزل Public لازم تقدم المشروع لمراجعة جوجل (YouTube API audit).
+
+### لينكدإن (نص وصور على حسابك الشخصي)
+1. [linkedin.com/developers/apps](https://www.linkedin.com/developers/apps) ← Create app (محتاج صفحة شركة على لينكدإن تربطها بالتطبيق)
+2. **Products** ← ضيف **Sign In with LinkedIn using OpenID Connect** و **Share on LinkedIn**
+3. **Auth** ← Redirect URL: `https://socialmanager.fairman200818.workers.dev/auth/linkedin/callback`
+4. حط في Cloudflare: `LINKEDIN_CLIENT_ID` و `LINKEDIN_CLIENT_SECRET`
+
+ملاحظات: النشر على **صفحات الشركات** محتاج موافقة لينكدإن على Community Management API. الصلاحية بتنتهي كل 60 يوم، وبعدها تربط تاني. الفيديو على لينكدإن لسه مش مدعوم من المنصة.
+
+### تيك توك (فيديو بس)
+1. [developers.tiktok.com](https://developers.tiktok.com) ← Manage apps ← Connect an app
+2. ضيف **Login Kit** و **Content Posting API** (فعّل Direct Post)
+3. Redirect URI: `https://socialmanager.fairman200818.workers.dev/auth/tiktok/callback`
+4. Scopes: `user.info.basic`, `video.publish`, `video.upload`
+5. حط في Cloudflare: `TIKTOK_CLIENT_KEY` و `TIKTOK_CLIENT_SECRET`
+
+⚠️ لحد ما تيك توك يراجع التطبيق (Audit)، الفيديوهات بتنزل **Private (أنا بس)**، وده شرط من تيك توك نفسه.
+
 ## الرجوع لنسخة قديمة (لو حصلت مشكلة)
 
 - **نقاط الرجوع:** كل نسخة مستقرة ليها اسم (Tag) على GitHub، زي `v1.0`. تلاقيهم في صفحة الـ Repository ← **Tags**.

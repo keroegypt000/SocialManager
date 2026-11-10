@@ -374,3 +374,9 @@ a.top-post[href]:hover { border-color: var(--primary); }
 .table th, .table td { padding: 8px 10px; border-bottom: 1px solid var(--border); text-align: start; white-space: nowrap; }
 .table th { color: var(--muted); font-weight: 600; font-size: 13px; }
 .table td:first-child { white-space: normal; min-width: 160px; }
+.platform.youtube { background: #ff0000; }
+.platform.tiktok { background: #111; }
+.platform.linkedin { background: #0a66c2; }
+.platform-pick label.pf-youtube:has(input:checked) { border-color: #ff0000; color: #cc0000; }
+.platform-pick label.pf-tiktok:has(input:checked) { border-color: #111; }
+.platform-pick label.pf-linkedin:has(input:checked) { border-color: #0a66c2; color: #0a66c2; }

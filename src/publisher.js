@@ -2,6 +2,7 @@ import { decrypt } from './crypto.js';
 import { publishFacebook, publishInstagram, containerStatus, finishInstagram, mediaOf } from './meta.js';
 import { deleteVideo } from './media.js';
 import { notifyAll } from './push.js';
+import { EXTRA_PUBLISHERS, tiktokStatus } from './providers.js';
 
 const PUBLISHERS = {
   facebook: publishFacebook,
@@ -36,7 +37,7 @@ export async function publishPost(env, postId) {
   if (!post) throw new Error('المنشور مش موجود');
 
   const { results: targets } = await env.DB.prepare(
-    `SELECT pt.id, pt.status, a.platform, a.external_id, a.token_enc
+    `SELECT pt.id, pt.status, a.id AS account_id, a.platform, a.external_id, a.token_enc
      FROM post_targets pt JOIN accounts a ON a.id = pt.account_id
      WHERE pt.post_id = ?`
   ).bind(postId).all();
@@ -44,10 +45,16 @@ export async function publishPost(env, postId) {
   for (const t of targets) {
     if (['published', 'processing', 'manual'].includes(t.status)) continue;
     try {
-      const fn = PUBLISHERS[t.platform];
-      if (!fn) throw new Error('المنصة دي لسه مش مدعومة: ' + t.platform);
-      const token = t.platform === 'whatsapp' ? '' : await decrypt(env.SESSION_SECRET, t.token_enc);
-      const result = await fn(env, t.external_id, token, post);
+      let result;
+      if (EXTRA_PUBLISHERS[t.platform]) {
+        // YouTube / LinkedIn / TikTok manage (and refresh) their own tokens.
+        result = await EXTRA_PUBLISHERS[t.platform](env, { id: t.account_id, external_id: t.external_id, token_enc: t.token_enc }, post, mediaOf(post));
+      } else {
+        const fn = PUBLISHERS[t.platform];
+        if (!fn) throw new Error('المنصة دي لسه مش مدعومة: ' + t.platform);
+        const token = t.platform === 'whatsapp' ? '' : await decrypt(env.SESSION_SECRET, t.token_enc);
+        result = await fn(env, t.external_id, token, post);
+      }
       if (result && result.manual) {
         await env.DB.prepare("UPDATE post_targets SET status = 'manual', error = NULL WHERE id = ?").bind(t.id).run();
       } else if (result && result.pending) {
@@ -89,7 +96,7 @@ export async function runDuePosts(env) {
 // Instagram videos (and big albums) take a while to process: publish them once ready.
 export async function runProcessing(env) {
   const { results } = await env.DB.prepare(
-    `SELECT pt.id, pt.post_id, pt.external_post_id, pt.started_at, a.external_id, a.token_enc
+    `SELECT pt.id, pt.post_id, pt.external_post_id, pt.started_at, a.id AS account_id, a.platform, a.external_id, a.token_enc
      FROM post_targets pt JOIN accounts a ON a.id = pt.account_id
      WHERE pt.status = 'processing' LIMIT 20`
   ).all();
@@ -97,6 +104,18 @@ export async function runProcessing(env) {
   for (const t of results) {
     touched.add(t.post_id);
     try {
+      if (t.platform === 'tiktok') {
+        const st = await tiktokStatus(env, { id: t.account_id, token_enc: t.token_enc }, String(t.external_post_id).replace(/^tiktok:/, ''));
+        if (st.status === 'PUBLISH_COMPLETE') {
+          const id = st.publicaly_available_post_id?.[0] || st.publicly_available_post_id?.[0] || t.external_post_id;
+          await env.DB.prepare("UPDATE post_targets SET status = 'published', external_post_id = ?, error = NULL WHERE id = ?").bind(String(id), t.id).run();
+        } else if (st.status === 'FAILED') {
+          await fail(env, t.id, new Error(`تيك توك رفض الفيديو${st.fail_reason ? `: ${st.fail_reason}` : ''}`));
+        } else if (Date.now() - (t.started_at || 0) > PROCESSING_TIMEOUT) {
+          await fail(env, t.id, new Error('تيك توك اتأخر جداً في نشر الفيديو. شوف التطبيق نفسه.'));
+        }
+        continue;
+      }
       const token = await decrypt(env.SESSION_SECRET, t.token_enc);
       const s = await containerStatus(env, t.external_post_id, token);
       if (s.status_code === 'FINISHED') {
