@@ -28,6 +28,25 @@ function toast(msg) {
   toastTimer = setTimeout(() => { t.hidden = true; }, 3500);
 }
 
+// In-page yes/no question. The browser's own confirm() is blocked in some
+// browsers (e.g. embedded ones), which made actions silently do nothing.
+function askConfirm(message, { ok = 'تمام', cancel = 'إلغاء' } = {}) {
+  return new Promise((resolve) => {
+    const dlg = document.createElement('dialog');
+    dlg.className = 'dialog confirm-dialog';
+    dlg.innerHTML = `<form method="dialog" class="dlg-body">
+      <div style="font-weight:600;line-height:1.8">${esc(message)}</div>
+      <div class="dlg-actions" style="border:0;padding:0">
+        <button class="btn primary" value="ok">${esc(ok)}</button>
+        <button class="btn" value="cancel">${esc(cancel)}</button>
+      </div></form>`;
+    document.body.appendChild(dlg);
+    dlg.addEventListener('close', () => { resolve(dlg.returnValue === 'ok'); dlg.remove(); });
+    dlg.showModal();
+    dlg.querySelector('[value=ok]').focus();
+  });
+}
+
 async function api(path, { method = 'GET', body } = {}) {
   const res = await fetch('/api' + path, {
     method,
@@ -203,11 +222,11 @@ function bindPostActions(root, reload) {
       const row = btn.closest('.post');
       const id = row.dataset.id;
       if (btn.dataset.act === 'delete') {
-        if (!confirm('متأكد إنك عايز تحذف المنشور ده من المنصة؟ (مش هيتمسح من فيسبوك أو إنستجرام لو كان اتنشر)')) return;
+        if (!(await askConfirm('متأكد إنك عايز تحذف المنشور ده من المنصة؟ (مش هيتمسح من فيسبوك أو إنستجرام لو كان اتنشر)'))) return;
         await api(`/posts/${id}`, { method: 'DELETE' });
         toast('اتحذف');
       } else if (btn.dataset.act === 'delete-series') {
-        if (!confirm('هيتحذف كل المنشورات اللي لسه منزلتش في السلسلة دي. اللي اتنشر خلاص مش هيتأثر. متأكد؟')) return;
+        if (!(await askConfirm('هيتحذف كل المنشورات اللي لسه منزلتش في السلسلة دي. اللي اتنشر خلاص مش هيتأثر. متأكد؟'))) return;
         const r = await api(`/series/${row.dataset.series}`, { method: 'DELETE' });
         toast(`اتحذف ${r.deleted} منشور`);
       } else {
@@ -280,7 +299,7 @@ async function renderClients(main, params) {
 
   main.querySelectorAll('[data-del-account]').forEach((b) => {
     b.onclick = async () => {
-      if (!confirm('فك ربط الحساب ده؟ المنشورات المجدولة عليه هتتشال منه.')) return;
+      if (!(await askConfirm('فك ربط الحساب ده؟ المنشورات المجدولة عليه هتتشال منه.'))) return;
       await api(`/accounts/${b.dataset.delAccount}`, { method: 'DELETE' });
       renderClients(main, new URLSearchParams());
     };
@@ -295,7 +314,7 @@ async function renderClients(main, params) {
   });
   main.querySelectorAll('[data-del-client]').forEach((b) => {
     b.onclick = async () => {
-      if (!confirm('حذف العميل هيمسح كل حساباته ومنشوراته من المنصة. متأكد؟')) return;
+      if (!(await askConfirm('حذف العميل هيمسح كل حساباته ومنشوراته من المنصة. متأكد؟'))) return;
       await api(`/clients/${b.dataset.delClient}`, { method: 'DELETE' });
       renderClients(main, new URLSearchParams());
     };
@@ -698,7 +717,7 @@ async function renderCompose(main, params) {
       errBox.hidden = false;
       return;
     }
-    if (times.length > 1 && !confirm(`هيتعمل ${times.length} منشور مجدول. تمام؟`)) return;
+    if (times.length > 1 && !(await askConfirm(`هيتعمل ${times.length} منشور مجدول. تمام؟`))) return;
     const payload = {
       client_id: Number(clientSel.value),
       account_ids: [...document.querySelectorAll('#p-accounts input:checked')].map((i) => Number(i.value)),
@@ -850,10 +869,8 @@ async function renderCalendar(main) {
       if (!p) return;
       const at = atDay(day.dataset.date, postTime(p));
       let copy = e.ctrlKey || e.altKey || e.metaKey;
-      if (!copy && !EDITABLE.includes(p.status)) {
-        if (!confirm('المنشور ده اتنشر خلاص ومينفعش يتنقل. تعمل منه نسخة في اليوم ده؟')) return;
-        copy = true;
-      }
+      // A published post can't move, so dragging it makes a copy.
+      if (!EDITABLE.includes(p.status)) copy = true;
       if (!copy && new Date(postTime(p)).toDateString() === new Date(at).toDateString()) return;
       try {
         await api(`/posts/${p.id}/${copy ? 'duplicate' : 'move'}`, { method: 'POST', body: { scheduled_at: at } });
@@ -943,7 +960,7 @@ function openPostDialog(p, reload) {
     };
   });
   dlg.querySelectorAll('[data-do]').forEach((b) => {
-    b.onclick = () => {
+    b.onclick = async () => {
       const act = b.dataset.do;
       if (act === 'move') {
         return run(async () => {
@@ -968,7 +985,7 @@ function openPostDialog(p, reload) {
         });
       }
       if (act === 'delete') {
-        if (!confirm('تحذف المنشور ده من المنصة؟ (مش هيتمسح من فيسبوك أو إنستجرام لو كان اتنشر)')) return;
+        if (!(await askConfirm('تحذف المنشور ده من المنصة؟ (مش هيتمسح من فيسبوك أو إنستجرام لو كان اتنشر)'))) return;
         return run(async () => {
           await api(`/posts/${p.id}`, { method: 'DELETE' });
           toast('اتحذف');

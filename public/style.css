@@ -194,7 +194,7 @@ ul.dates { margin: 6px 0 0; padding-inline-start: 20px; font-size: 13px; }
 .dlg-when { font-size: 18px; font-weight: 700; }
 .dlg-content { display: flex; gap: 12px; align-items: flex-start; }
 .dlg-content img { width: 90px; height: 90px; object-fit: cover; border-radius: 8px; flex: none; }
-.dlg-text { flex: 1; min-width: 0; white-space: pre-wrap; word-break: break-word; max-height: 140px; overflow-y: auto; overflow-x: hidden; line-height: 1.7; }
+.dlg-text { flex: 1; min-width: 0; white-space: pre-wrap; word-break: break-word; line-height: 1.7; }
 .dlg-section { border-top: 1px solid var(--border); padding-top: 12px; }
 .dlg-section .quick { display: flex; gap: 6px; margin-bottom: 6px; flex-wrap: wrap; }
 .dlg-actions { display: flex; gap: 6px; flex-wrap: wrap; border-top: 1px solid var(--border); padding-top: 12px; }
