@@ -15,6 +15,11 @@ run_worker_first = ["/api/*", "/auth/*"]
 binding = "DB"
 database_name = "social-manager-db"
 
+# Public Meta app identifiers (not secret). META_APP_SECRET stays a Cloudflare secret.
+[vars]
+META_APP_ID = "1074514768884948"
+META_CONFIG_ID = "1118848971124486"
+
 # Publishes scheduled posts every 5 minutes.
 [triggers]
 crons = ["*/5 * * * *"]
