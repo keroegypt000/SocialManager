@@ -16,6 +16,18 @@ function errorPage(message) {
 export default {
   async fetch(req, env) {
     const url = new URL(req.url);
+
+    // Uploaded images must be public: Facebook and Instagram download them from here.
+    const media = url.pathname.match(/^\/media\/([0-9a-f-]{36}\.jpg)$/);
+    if (media) {
+      if (!env.MEDIA) return new Response('Not found', { status: 404 });
+      const obj = await env.MEDIA.getWithMetadata(media[1], 'arrayBuffer');
+      if (!obj.value) return new Response('Not found', { status: 404 });
+      return new Response(obj.value, {
+        headers: { 'Content-Type': 'image/jpeg', 'Cache-Control': 'public, max-age=31536000, immutable' },
+      });
+    }
+
     const isApi = url.pathname.startsWith('/api/');
     const isAuth = url.pathname.startsWith('/auth/');
     if (!isApi && !isAuth) return env.ASSETS.fetch(req);

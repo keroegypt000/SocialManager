@@ -107,6 +107,21 @@ async function route(req, env, url) {
     return json({ ok: true });
   }
 
+  // Image upload. The browser already converts to JPEG and resizes, so we only check and store.
+  if (path === '/media' && method === 'POST') {
+    if (!env.MEDIA) throw new HttpError(500, 'تخزين الصور مش متفعّل');
+    if (req.headers.get('Content-Type') !== 'image/jpeg') bad('الصورة لازم تكون JPEG');
+    const buf = await req.arrayBuffer();
+    if (!buf.byteLength) bad('الملف فاضي');
+    if (buf.byteLength > 8 * 1024 * 1024) bad('الصورة أكبر من 8 ميجا');
+    const head = new Uint8Array(buf, 0, 3);
+    if (head[0] !== 0xff || head[1] !== 0xd8 || head[2] !== 0xff) bad('الملف مش صورة JPEG سليمة');
+    const key = `${crypto.randomUUID()}.jpg`;
+    // Kept for a year: long enough for any scheduled post.
+    await env.MEDIA.put(key, buf, { expirationTtl: 365 * 86400 });
+    return json({ url: `${url.origin}/media/${key}` }, 201);
+  }
+
   // Picking which connected pages belong to a client
   m = path.match(/^\/connect\/([0-9a-f-]{36})$/);
   if (m && method === 'GET') {

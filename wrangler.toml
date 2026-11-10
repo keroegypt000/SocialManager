@@ -8,7 +8,7 @@ keep_vars = true
 directory = "./public"
 binding = "ASSETS"
 not_found_handling = "single-page-application"
-run_worker_first = ["/api/*", "/auth/*"]
+run_worker_first = ["/api/*", "/auth/*", "/media/*"]
 
 # The database is created automatically on the first deploy.
 [[d1_databases]]
@@ -19,6 +19,10 @@ database_name = "social-manager-db"
 [vars]
 META_APP_ID = "1074514768884948"
 META_CONFIG_ID = "1118848971124486"
+
+# Uploaded images (free KV storage). Created automatically on deploy.
+[[kv_namespaces]]
+binding = "MEDIA"
 
 # Publishes scheduled posts every 5 minutes.
 [triggers]

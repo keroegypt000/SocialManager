@@ -400,9 +400,13 @@ async function renderCompose(main, params) {
           <div class="counter" id="p-count">0 حرف</div>
         </div>
         <div class="field">
-          <label for="p-image">رابط الصورة (مطلوب لإنستجرام)</label>
-          <input id="p-image" type="url" dir="ltr" placeholder="https://...jpg">
-          <div class="muted small">لازم يكون رابط مباشر لصورة JPG أو PNG بيفتح من غير تسجيل دخول.</div>
+          <label>الصورة (مطلوبة لإنستجرام)</label>
+          <label class="drop" id="p-drop" for="p-file">
+            <input id="p-file" type="file" accept="image/*" hidden>
+            <span id="p-drop-text">📷 دوس هنا واختار صورة من جهازك، أو اسحبها وسيبها هنا</span>
+          </label>
+          <input id="p-image" type="url" dir="ltr" placeholder="أو حط رابط صورة: https://...jpg" style="margin-top:8px">
+          <button type="button" class="btn small danger" id="p-clear-img" hidden style="margin-top:6px">شيل الصورة</button>
         </div>
         <div class="field">
           <label for="p-link">رابط (لفيسبوك فقط، اختياري)</label>
@@ -451,7 +455,43 @@ async function renderCompose(main, params) {
       : '<span class="muted">اكتب المنشور وهتظهر المعاينة هنا</span>';
   };
   $('#p-message').oninput = updatePreview;
-  $('#p-image').oninput = updatePreview;
+  $('#p-image').oninput = () => { $('#p-clear-img').hidden = !$('#p-image').value; updatePreview(); };
+
+  // Image upload: convert any image to JPEG (Instagram only accepts JPEG) and shrink big photos.
+  const dropText = $('#p-drop-text');
+  const submitBtn = $('#p-submit');
+  const uploadFile = async (file) => {
+    if (!file || !file.type.startsWith('image/')) return toast('اختار ملف صورة');
+    dropText.textContent = 'جاري رفع الصورة…';
+    submitBtn.disabled = true;
+    try {
+      const jpeg = await toJpeg(file);
+      const res = await fetch('/api/media', { method: 'POST', headers: { 'Content-Type': 'image/jpeg' }, body: jpeg, credentials: 'same-origin' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'فشل رفع الصورة');
+      $('#p-image').value = data.url;
+      $('#p-clear-img').hidden = false;
+      dropText.textContent = `✅ ${file.name}، دوس هنا لو عايز تغيّرها`;
+      updatePreview();
+    } catch (err) {
+      dropText.textContent = '📷 دوس هنا واختار صورة من جهازك، أو اسحبها وسيبها هنا';
+      toast(err.message);
+    } finally {
+      submitBtn.disabled = false;
+    }
+  };
+  $('#p-file').onchange = (e) => uploadFile(e.target.files[0]);
+  const drop = $('#p-drop');
+  drop.ondragover = (e) => { e.preventDefault(); drop.classList.add('over'); };
+  drop.ondragleave = () => drop.classList.remove('over');
+  drop.ondrop = (e) => { e.preventDefault(); drop.classList.remove('over'); uploadFile(e.dataTransfer.files[0]); };
+  $('#p-clear-img').onclick = () => {
+    $('#p-image').value = '';
+    $('#p-file').value = '';
+    $('#p-clear-img').hidden = true;
+    dropText.textContent = '📷 دوس هنا واختار صورة من جهازك، أو اسحبها وسيبها هنا';
+    updatePreview();
+  };
 
   const updateMode = () => {
     const mode = document.querySelector('input[name=mode]:checked').value;
@@ -495,6 +535,29 @@ async function renderCompose(main, params) {
       btn.disabled = false;
     }
   };
+}
+
+// Re-encode an image as JPEG, max 2048px on the long side, inside Instagram's aspect-ratio limits.
+async function toJpeg(file) {
+  const bitmap = await createImageBitmap(file).catch(() => { throw new Error('مش قادر أقرا الصورة دي، جرّب صورة JPG أو PNG'); });
+  let { width: w, height: h } = bitmap;
+  const ratio = w / h;
+  if (ratio > 1.91 || ratio < 0.8) {
+    toast('تنبيه: إنستجرام بيقبل نسبة أبعاد بين 4:5 و 1.91:1، الصورة دي ممكن تترفض على إنستجرام');
+  }
+  const scale = Math.min(1, 2048 / Math.max(w, h));
+  w = Math.round(w * scale);
+  h = Math.round(h * scale);
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#fff'; // transparent PNGs get a white background instead of black
+  ctx.fillRect(0, 0, w, h);
+  ctx.drawImage(bitmap, 0, 0, w, h);
+  bitmap.close?.();
+  return new Promise((resolve, reject) =>
+    canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('فشل تجهيز الصورة'))), 'image/jpeg', 0.9));
 }
 
 // ---------- calendar ----------
