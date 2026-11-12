@@ -611,7 +611,9 @@ function openWhatsAppAuto(accountId, name, isAuto, done) {
       box.innerHTML = `<div class="notice ok">✅ مربوط${s.phone ? ` بالرقم <b dir="ltr">+${esc(s.phone)}</b>` : ''}${s.name ? ` (${esc(s.name)})` : ''}.<br>
         الحالات اللي هتتجدول على الحساب ده هتتنشر لوحدها في ميعادها.</div>
         <div class="small">👥 جهات الاتصال اللي هتشوف الحالة: <b>${fmtNum(s.contacts)}</b>${s.contacts ? '' : ' <span class="muted">(بتوصل من الموبايل خلال دقايق بعد الربط، سيب واتساب مفتوح على الموبايل شوية)</span>'}<br>
-        ${s.last_status ? `📤 آخر حالة: اتبعتت لـ <b>${fmtNum(s.last_status.audience)}</b> جهة اتصال (${esc(when(s.last_status.at))})<br>` : ''}
+        ${s.last_status ? `📤 آخر حالة: اتبعتت لـ <b>${fmtNum(s.last_status.audience)}</b> جهة اتصال (${esc(when(s.last_status.at))})${
+          s.last_status.ack ? (s.last_status.ack.error ? ` · <b style="color:var(--bad)">واتساب رفضها (كود ${esc(s.last_status.ack.error)})</b>` : ' · ✅ واتساب استلمها') : (s.last_status.id ? ' · ⚠️ مفيش تأكيد من واتساب' : '')
+        }<br><span class="muted small" dir="ltr">diag: ${esc(JSON.stringify({ a: s.last_status.audience, pn: s.last_status.with_phone, k: s.last_status.kind, ack: s.last_status.ack }))}</span><br>` : ''}
         <span class="muted">آخر اتصال: ${esc(when(s.last_open))}</span><br>
         <span class="muted small">الحالة بتظهر عند الشخص لو رقمك متسجل عنده <b>و</b> رقمه متسجل عندك، وحسب إعدادات خصوصية الحالة على موبايلك.</span></div>`;
       actions.innerHTML = '<button type="button" class="btn danger" data-unlink>افصل الرقم ورجّعها يدوي</button>';
