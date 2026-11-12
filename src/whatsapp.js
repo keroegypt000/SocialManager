@@ -43,12 +43,15 @@ export async function publishWhatsAppStatus(env, accountId, post, media) {
   const gw = gatewayFor(env, accountId);
   const text = [post.message, post.link].filter(Boolean).join('\n\n');
   const ids = [];
+  // Default: a post with an image/video goes to WhatsApp without its text (the text
+  // and hashtags stay on the other platforms). Can be switched off on the WhatsApp page.
+  const mediaOnly = (await getWaSettings(env)).media_only;
   if (!media.length) {
     if (!text) throw new Error('الحالة فاضية');
     ids.push((await gw.postStatus({ text })).id);
   } else {
     for (const [i, m] of media.entries()) {
-      ids.push((await gw.postStatus({ media: m, caption: i === 0 ? text.slice(0, 700) : '' })).id);
+      ids.push((await gw.postStatus({ media: m, caption: i === 0 && !mediaOnly ? text.slice(0, 700) : '' })).id);
     }
   }
   return ids.join(',');
@@ -71,6 +74,14 @@ export async function dailyWhatsAppKeepAlive(env) {
 // Counted on Egypt's calendar day. Empty/0 = no limit.
 const TZ = 'Africa/Cairo';
 const dayOf = (ms) => new Intl.DateTimeFormat('en-CA', { timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(ms));
+
+export async function getWaSettings(env) {
+  const row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'wa_media_only'").first();
+  return { limit: await getWaLimit(env), media_only: row ? row.value === '1' : true };
+}
+export async function setWaMediaOnly(env, on) {
+  await env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('wa_media_only', ?)").bind(on ? '1' : '0').run();
+}
 
 export async function getWaLimit(env) {
   const row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'wa_daily_limit'").first();

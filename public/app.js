@@ -1307,7 +1307,7 @@ async function enablePush() {
 
 async function renderWhatsApp(main) {
   const $ = (sel) => main.querySelector(sel); // this page's own elements only
-  const [data, push, { limit }] = await Promise.all([api('/whatsapp/queue'), pushStatus().catch(() => 'unsupported'), api('/whatsapp/limit').catch(() => ({ limit: 0 }))]);
+  const [data, push, { limit, media_only: mediaOnly = true }] = await Promise.all([api('/whatsapp/queue'), pushStatus().catch(() => 'unsupported'), api('/whatsapp/limit').catch(() => ({ limit: 0 }))]);
   const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
   const standalone = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone;
   const shareOk = canShareFiles();
@@ -1356,6 +1356,8 @@ async function renderWhatsApp(main) {
       <input id="wa-limit-n" type="number" min="0" max="50" placeholder="من غير حد" value="${limit || ''}">
       <button class="btn small primary">حفظ</button>
       <span class="muted small">${limit ? `دلوقتي: ${limit} في اليوم. المنصة مش هتسمح تجدول أكتر من كده لنفس الرقم في نفس اليوم.` : 'سيبه فاضي لو مش عايز حد. (اختياري)'}</span>
+      <label class="check" style="width:100%;margin:0"><input type="checkbox" id="wa-media-only" ${mediaOnly ? 'checked' : ''}>
+        🖼️ لو المنشور فيه صورة أو فيديو: انشر على الواتساب <b>الصورة/الفيديو بس</b> من غير الكلام والهاشتاج (الكلام بيفضل على فيسبوك وإنستجرام)</label>
     </form>
     ${pushBox}
     ${!shareOk ? '<div class="notice">💡 عشان تنشر بلمسة واحدة، افتح الصفحة دي من <b>الموبايل</b> اللي عليه واتساب. من الكمبيوتر تقدر تحمّل الصورة وتنسخ الكلام.</div>' : ''}
@@ -1369,6 +1371,10 @@ async function renderWhatsApp(main) {
       </div></div>`).join('') : '<div class="empty">مفيش حالات مجدولة الأسبوع ده. ضيف حساب "حالة واتساب" للعميل من صفحة العملاء، واختاره في منشور جديد.</div>'}</div>`;
 
   const reload = () => { renderWhatsApp(main); updateWaBadge(); };
+  $('#wa-media-only').onchange = async (e) => {
+    await api('/whatsapp/limit', { method: 'PUT', body: { media_only: e.target.checked } });
+    toast(e.target.checked ? 'الواتساب هياخد الصور والفيديو بس ✅' : 'الواتساب هياخد الكلام مع الصورة');
+  };
   $('#wa-limit').onsubmit = async (e) => {
     e.preventDefault();
     const r = await api('/whatsapp/limit', { method: 'PUT', body: { limit: Number($('#wa-limit-n').value) || 0 } });

@@ -5,7 +5,7 @@ import { createInvite, revokeInvites } from './invite.js';
 import { buildReport, createReportLink, clientForReportLink } from './reports.js';
 import { adsOverview, setObjectStatus, setBudget, campaignDetails, pagePosts, boostPost, AdsError } from './ads.js';
 import { providersStatus } from './providers.js';
-import { whatsappLink, whatsappUnlink, WhatsAppError, GATEWAY, getWaLimit, setWaLimit, checkWaLimit } from './whatsapp.js';
+import { whatsappLink, whatsappUnlink, WhatsAppError, GATEWAY, getWaLimit, setWaLimit, checkWaLimit, getWaSettings, setWaMediaOnly } from './whatsapp.js';
 import { syncFromSaved, syncStatus, ignoreKeys, clearIgnored } from './sync.js';
 import { publishPost, finalizePost } from './publisher.js';
 import { publicKey as pushPublicKey, subscribe as pushSubscribe, notifyAll } from './push.js';
@@ -347,8 +347,13 @@ async function route(req, env, url) {
     }
   }
 
-  if (path === '/whatsapp/limit' && method === 'GET') return json({ limit: await getWaLimit(env) });
-  if (path === '/whatsapp/limit' && method === 'PUT') return json({ limit: await setWaLimit(env, (await body(req)).limit) });
+  if (path === '/whatsapp/limit' && method === 'GET') return json(await getWaSettings(env));
+  if (path === '/whatsapp/limit' && method === 'PUT') {
+    const b = await body(req);
+    if ('limit' in b) await setWaLimit(env, b.limit);
+    if ('media_only' in b) await setWaMediaOnly(env, !!b.media_only);
+    return json(await getWaSettings(env));
+  }
 
   if (path === '/whatsapp/count' && method === 'GET') {
     const r = await db.prepare("SELECT COUNT(*) AS n FROM post_targets WHERE status = 'manual'").first();
