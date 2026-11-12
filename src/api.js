@@ -5,7 +5,7 @@ import { createInvite, revokeInvites } from './invite.js';
 import { buildReport, createReportLink, clientForReportLink } from './reports.js';
 import { adsOverview, setObjectStatus, setBudget, campaignDetails, pagePosts, boostPost, AdsError } from './ads.js';
 import { providersStatus } from './providers.js';
-import { whatsappLinkState, setWhatsAppToken, accountToken, WhatsAppError } from './whatsapp.js';
+import { whatsappLinkState, setWhatsAppToken, accountToken, WhatsAppError, getWaLimit, setWaLimit, checkWaLimit } from './whatsapp.js';
 import { syncFromSaved, syncStatus, ignoreKeys, clearIgnored } from './sync.js';
 import { publishPost, finalizePost } from './publisher.js';
 import { publicKey as pushPublicKey, subscribe as pushSubscribe, notifyAll } from './push.js';
@@ -55,7 +55,7 @@ const MAX_SERIES = 200;
 
 // Validates the post form (create or edit). `times` holds every publish time:
 // one for a normal scheduled post, many for a repeat or custom-dates series.
-async function readPostInput(env, b, { single = false } = {}) {
+async function readPostInput(env, b, { single = false, postId = 0 } = {}) {
   const db = env.DB;
   const clientId = Number(b.client_id);
   const accountIds = [...new Set((b.account_ids || []).map(Number).filter(Boolean))];
@@ -85,7 +85,7 @@ async function readPostInput(env, b, { single = false } = {}) {
   }
 
   const placeholders = accountIds.map(() => '?').join(',');
-  const owned = await db.prepare(`SELECT id, platform FROM accounts WHERE client_id = ? AND id IN (${placeholders})`)
+  const owned = await db.prepare(`SELECT id, platform, name FROM accounts WHERE client_id = ? AND id IN (${placeholders})`)
     .bind(clientId, ...accountIds).all();
   if (owned.results.length !== accountIds.length) bad('فيه حساب مش تبع العميل ده');
   if (!media.length && owned.results.some((a) => a.platform === 'instagram')) bad('إنستجرام محتاج صورة أو فيديو. ضيفهم أو شيل حساب إنستجرام.');
@@ -93,6 +93,14 @@ async function readPostInput(env, b, { single = false } = {}) {
   if (!hasVideo && (picked.has('youtube') || picked.has('tiktok'))) bad(`${picked.has('youtube') ? 'يوتيوب' : 'تيك توك'} محتاج فيديو مرفوع على المنصة. ارفع فيديو أو شيل الحساب ده.`);
   if (hasVideo && picked.has('linkedin')) bad('لينكدإن: نشر الفيديو من المنصة لسه مش متاح. شيل لينكدإن أو استخدم صور.');
   if (picked.has('meta_ads')) bad('حسابات الإعلانات مش بتتنشر عليها منشورات');
+  if (picked.has('whatsapp') && mode !== 'draft') {
+    try {
+      await checkWaLimit(env, owned.results.filter((a) => a.platform === 'whatsapp'), mode === 'now' ? [Date.now()] : times, postId);
+    } catch (err) {
+      if (err instanceof WhatsAppError) bad(err.message);
+      throw err;
+    }
+  }
 
   return { clientId, accountIds, message, imageUrl, media: media.length ? JSON.stringify(media) : null, fbReel: fbReel ? 1 : 0, link, mode, times };
 }
@@ -336,6 +344,9 @@ async function route(req, env, url) {
     }
   }
 
+  if (path === '/whatsapp/limit' && method === 'GET') return json({ limit: await getWaLimit(env) });
+  if (path === '/whatsapp/limit' && method === 'PUT') return json({ limit: await setWaLimit(env, (await body(req)).limit) });
+
   if (path === '/whatsapp/count' && method === 'GET') {
     const r = await db.prepare("SELECT COUNT(*) AS n FROM post_targets WHERE status = 'manual'").first();
     return json({ count: r.n });
@@ -520,7 +531,7 @@ async function route(req, env, url) {
     const existing = await db.prepare('SELECT status FROM posts WHERE id = ?').bind(m[1]).first();
     if (!existing) throw new HttpError(404, 'المنشور مش موجود');
     if (!['draft', 'scheduled', 'failed', 'partial'].includes(existing.status)) bad('المنشور ده اتنشر خلاص. اعمل منه نسخة بدل التعديل.');
-    const input = await readPostInput(env, await body(req), { single: true });
+    const input = await readPostInput(env, await body(req), { single: true, postId: Number(m[1]) });
     const status = input.mode === 'draft' ? 'draft' : input.mode === 'now' ? 'publishing' : 'scheduled';
     const at = input.mode === 'schedule' ? input.times[0] : null;
     await db.batch([

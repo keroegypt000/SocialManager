@@ -168,6 +168,9 @@ textarea { min-height: 140px; resize: vertical; }
 .sync-card > div:first-child { flex: 1 1 320px; }
 .sync-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 #new-client-box summary { cursor: pointer; }
+.wa-limit { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 16px; }
+.wa-limit label { margin: 0; font-weight: 700; }
+.wa-limit input { width: 110px; }
 .wa-auto.on { background: var(--ok-soft); color: var(--ok); border-color: var(--ok-soft); }
 .wa-steps { margin: 0 0 10px; padding-inline-start: 20px; line-height: 1.9; }
 .wa-qr { display: flex; gap: 14px; align-items: center; margin-bottom: 10px; }

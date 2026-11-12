@@ -1300,7 +1300,7 @@ async function enablePush() {
 }
 
 async function renderWhatsApp(main) {
-  const [data, push] = await Promise.all([api('/whatsapp/queue'), pushStatus().catch(() => 'unsupported')]);
+  const [data, push, { limit }] = await Promise.all([api('/whatsapp/queue'), pushStatus().catch(() => 'unsupported'), api('/whatsapp/limit').catch(() => ({ limit: 0 }))]);
   const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
   const standalone = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone;
   const shareOk = canShareFiles();
@@ -1344,6 +1344,12 @@ async function renderWhatsApp(main) {
 
   main.innerHTML = `
     <div class="page-head"><h1>📱 حالات واتساب</h1><a class="btn primary" href="#/compose?platform=whatsapp">+ حالة جديدة</a></div>
+    <form class="card wa-limit" id="wa-limit">
+      <label for="wa-limit-n">🛡️ الحد الأقصى للحالات في اليوم لكل رقم</label>
+      <input id="wa-limit-n" type="number" min="0" max="50" placeholder="من غير حد" value="${limit || ''}">
+      <button class="btn small primary">حفظ</button>
+      <span class="muted small">${limit ? `دلوقتي: ${limit} في اليوم. المنصة مش هتسمح تجدول أكتر من كده لنفس الرقم في نفس اليوم.` : 'سيبه فاضي لو مش عايز حد. (اختياري)'}</span>
+    </form>
     ${pushBox}
     ${!shareOk ? '<div class="notice">💡 عشان تنشر بلمسة واحدة، افتح الصفحة دي من <b>الموبايل</b> اللي عليه واتساب. من الكمبيوتر تقدر تحمّل الصورة وتنسخ الكلام.</div>' : ''}
     <h2>جاهزة للنشر ${data.ready.length ? `(${data.ready.length})` : ''}</h2>
@@ -1356,6 +1362,12 @@ async function renderWhatsApp(main) {
       </div></div>`).join('') : '<div class="empty">مفيش حالات مجدولة الأسبوع ده. ضيف حساب "حالة واتساب" للعميل من صفحة العملاء، واختاره في منشور جديد.</div>'}</div>`;
 
   const reload = () => { renderWhatsApp(main); updateWaBadge(); };
+  $('#wa-limit').onsubmit = async (e) => {
+    e.preventDefault();
+    const r = await api('/whatsapp/limit', { method: 'PUT', body: { limit: Number($('#wa-limit-n').value) || 0 } });
+    toast(r.limit ? `الحد بقى ${r.limit} حالة في اليوم لكل رقم 🛡️` : 'اتشال الحد');
+    reload();
+  };
   $('#push-on')?.addEventListener('click', async (e) => {
     e.target.disabled = true;
     try { await enablePush(); toast('الإشعارات اتفعّلت ✅'); reload(); } catch (err) { toast(err.message); e.target.disabled = false; }

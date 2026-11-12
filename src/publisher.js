@@ -3,7 +3,7 @@ import { publishFacebook, publishInstagram, containerStatus, finishInstagram, me
 import { deleteVideo } from './media.js';
 import { notifyAll } from './push.js';
 import { EXTRA_PUBLISHERS, tiktokStatus } from './providers.js';
-import { publishWhatsAppStatus } from './whatsapp.js';
+import { publishWhatsAppStatus, waLimitReached, getWaLimit } from './whatsapp.js';
 
 const PUBLISHERS = {
   facebook: publishFacebook,
@@ -47,6 +47,9 @@ export async function publishPost(env, postId) {
   for (const t of targets) {
     if (['published', 'processing', 'manual'].includes(t.status)) continue;
     try {
+      if (t.platform === 'whatsapp' && (await waLimitReached(env, t.account_id, postId))) {
+        throw new Error(`وصلت للحد اليومي لحالات الرقم ده (${await getWaLimit(env)} في اليوم). اتنشرت على باقي الحسابات بس، وتقدر تعيد المحاولة بكرة.`);
+      }
       let result;
       if (EXTRA_PUBLISHERS[t.platform]) {
         // YouTube / LinkedIn / TikTok manage (and refresh) their own tokens.
