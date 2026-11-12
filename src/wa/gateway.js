@@ -79,16 +79,40 @@ export class WhatsAppGateway extends DurableObject {
   contactCount() { return this.sql.exec('SELECT COUNT(*) AS n FROM contacts').toArray()[0].n; }
 
   // Who receives a status: every known contact, by phone-number JID when we have it.
-  // The number itself is included, so the status also shows under "My status" on the phone.
-  audience() {
+  // Who receives a status: the number itself (so it shows under "My status") plus every
+  // contact, all as phone-number JIDs (@s.whatsapp.net). WhatsApp rejects (400) a status
+  // whose recipient list mixes phone numbers and LIDs, so LID-only contacts are mapped
+  // to their phone number, and dropped if WhatsApp doesn't know it.
+  async audience() {
     const me = dec(this.get('creds'))?.me;
-    const own = me?.id ? me.id.replace(/:\d+@/, '@') : null;
+    const norm = (j) => (j ? `${String(j).split('@')[0].split(':')[0]}@s.whatsapp.net` : null);
+    const own = norm(me?.id);
     const set = new Set(own ? [own] : []);
+    const lids = [];
     for (const r of this.sql.exec('SELECT jid, pn FROM contacts').toArray()) {
-      const j = r.pn || r.jid;
-      if (j && !j.startsWith(own?.split('@')[0] + '@')) set.add(j);
+      if (r.pn && r.pn.endsWith('@s.whatsapp.net')) set.add(norm(r.pn));
+      else if (r.jid.endsWith('@s.whatsapp.net')) set.add(norm(r.jid));
+      else if (r.jid.endsWith('@lid')) lids.push(r.jid);
     }
-    return [...set];
+    let mapped = 0;
+    if (lids.length) {
+      try {
+        const pairs = (await this.sock.signalRepository.lidMapping.getPNsForLIDs(lids)) || [];
+        this.ctx.storage.transactionSync(() => {
+          for (const p of pairs) {
+            if (!p?.pn) continue;
+            const pn = norm(p.pn);
+            set.add(pn);
+            mapped++;
+            this.sql.exec('UPDATE contacts SET pn = ? WHERE jid = ?', pn, p.lid);
+          }
+        });
+      } catch (err) {
+        console.error('lid mapping', err.message);
+      }
+    }
+    const list = [...set].filter((j) => /^\d{6,15}@s\.whatsapp\.net$/.test(j));
+    return { list, lids: lids.length, mapped, dropped: lids.length - mapped };
   }
 
   // ---------- connection ----------
@@ -233,7 +257,8 @@ export class WhatsAppGateway extends DurableObject {
       await this.waitOpen();
       // Give WhatsApp a moment to deliver pending notifications after connecting.
       await sleep(2500);
-      const audience = this.audience();
+      const aud = await this.audience();
+      const audience = aud.list;
       if (audience.length < 2) {
         throw new Error('لسه مفيش جهات اتصال وصلت من الموبايل، فالحالة مش هتوصل لحد. افتح واتساب على الموبايل شوية وجرّب تاني بعد 10 دقايق.');
       }
@@ -264,7 +289,7 @@ export class WhatsAppGateway extends DurableObject {
       }
       const ack = acks.get(id) || null;
       const pn = this.sql.exec('SELECT COUNT(*) AS n FROM contacts WHERE pn IS NOT NULL').toArray()[0].n;
-      const diag = { at: Date.now(), audience: audience.length - 1, with_phone: pn, kind: media?.type || 'text', id, ack };
+      const diag = { at: Date.now(), audience: audience.length - 1, with_phone: pn, lids: aud.lids, mapped: aud.mapped, dropped: aud.dropped, kind: media?.type || 'text', id, ack };
       this.put('last_status', JSON.stringify(diag));
       if (!ack) throw new Error('واتساب مأكدش استلام الحالة (مفيش رد من السيرفر خلال 15 ثانية). جرّب تاني.');
       if (ack.error) throw new Error(`واتساب رفض الحالة (كود ${ack.error}). ابعت الرقم ده للدعم.`);
