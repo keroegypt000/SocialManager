@@ -526,6 +526,13 @@ async function renderConnect(main, params) {
         ${pages.map((p) => row(p) + igFor(p.page_id).map((ig) => `<div style="margin-inline-start:28px">${row(ig)}</div>`).join('')).join('')}
         ${data.items.filter((i) => i.platform === 'meta_ads').map((ad) => row(ad)).join('')}
       </div>
+      ${data.ads_note ? `<div class="notice" style="margin-top:14px">📢 <b>مفيش حسابات إعلانات ظهرت.</b> ${
+        data.ads_note.startsWith('missing:')
+          ? `فيسبوك مدّاش صلاحية الإعلانات (${esc(data.ads_note.slice(8))}). دوس ربط تاني، وفي شاشة فيسبوك دوس <b>تعديل الإعدادات / Edit settings</b> واختار حساب الإعلانات ووافق على كل الصلاحيات.`
+          : data.ads_note.startsWith('error:')
+            ? `فيسبوك رد بالخطأ ده: <span dir="ltr">${esc(data.ads_note.slice(6))}</span>`
+            : 'حسابك على فيسبوك مش أدمن على أي حساب إعلانات، أو مختارتوش في شاشة فيسبوك. لو حساب الإعلانات بتاع العميل، خلّيه يضيفك عليه من Business Manager أو يربط من لينك الدعوة.'
+      }</div>` : ''}
       <div id="c-err" class="notice bad" hidden style="margin-top:14px"></div>
       <div style="display:flex;gap:8px;margin-top:16px">
         <button class="btn primary">حفظ</button>

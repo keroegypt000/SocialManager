@@ -114,9 +114,10 @@ export async function metaCallback(env, url, { isAdmin = false } = {}) {
   }
   // Ad accounts the person can use (needs ads_read). They use the long-lived user token,
   // which lasts about 60 days; reconnecting refreshes it.
+  let adsError = null;
   const ads = await graph(env, 'me/adaccounts', {
     params: { access_token: long.access_token, fields: 'id,name,account_status,currency', limit: '100' },
-  }).catch(() => null);
+  }).catch((e) => { adsError = e.message; return null; });
   const adList = [...(ads?.data || [])];
   // Ad accounts that live in a Business Manager don't always show up in me/adaccounts.
   const biz = await graph(env, 'me/businesses', {
@@ -132,13 +133,21 @@ export async function metaCallback(env, url, { isAdmin = false } = {}) {
     seenAds.add(ad.id);
     items.push({ platform: 'meta_ads', external_id: ad.id, name: `${ad.name || ad.id} (${ad.currency || ''})`.trim(), picture: null, token: long.access_token, page_id: null });
   }
+  // Why no ad accounts came back: shown on the picker so it's not a silent "none".
+  let adsNote = null;
+  if (!seenAds.size) {
+    const perms = await graph(env, 'me/permissions', { params: { access_token: long.access_token } }).catch(() => null);
+    const granted = new Set((perms?.data || []).filter((p) => p.status === 'granted').map((p) => p.permission));
+    const missing = ['ads_read', 'ads_management'].filter((p) => !granted.has(p));
+    adsNote = perms && missing.length ? `missing:${missing.join(',')}` : adsError ? `error:${adsError}` : 'none';
+  }
   if (!items.length) return back(invite ? 'error=' + encodeURIComponent('مالقيناش صفحات. اتأكد إنك اخترت صفحتك في شاشة فيسبوك وإنك أدمن عليها.') : 'connected=0');
 
   const token = crypto.randomUUID();
   await env.DB.batch([
     env.DB.prepare('DELETE FROM pending_links WHERE expires_at < ?').bind(Date.now()),
     env.DB.prepare('INSERT INTO pending_links (token, client_id, payload_enc, expires_at) VALUES (?, ?, ?, ?)')
-      .bind(token, clientId, await encrypt(env.SESSION_SECRET, JSON.stringify(items)), Date.now() + 30 * 60 * 1000),
+      .bind(token, clientId, await encrypt(env.SESSION_SECRET, JSON.stringify(adsNote ? [...items, { platform: '_note', external_id: 'ads', name: adsNote }] : items)), Date.now() + 30 * 60 * 1000),
   ]);
   if (invite) return Response.redirect(`${url.origin}/invite/${invite.token}/pick?p=${token}`, 302);
   return Response.redirect(`${url.origin}/#/connect?token=${token}`, 302);

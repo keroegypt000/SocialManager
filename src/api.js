@@ -227,7 +227,8 @@ async function route(req, env, url) {
     return json({
       client_id: pending.clientId,
       client_name: pending.clientName,
-      items: pending.items.map((it) => {
+      ads_note: pending.items.find((it) => it.platform === '_note')?.name || null,
+      items: pending.items.filter((it) => it.platform !== '_note').map((it) => {
         const o = owner.get(`${it.platform}:${it.external_id}`);
         return {
           key: `${it.platform}:${it.external_id}`, platform: it.platform, name: it.name, picture: it.picture, page_id: it.page_id,
