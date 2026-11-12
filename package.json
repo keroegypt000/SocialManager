@@ -9,5 +9,9 @@
   },
   "devDependencies": {
     "wrangler": "^4.40.0"
+  },
+  "dependencies": {
+    "baileys": "7.0.0-rc14",
+    "qrcode": "1.5.4"
   }
 }

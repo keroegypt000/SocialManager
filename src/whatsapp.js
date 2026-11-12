@@ -1,91 +1,70 @@
-// Automatic WhatsApp statuses through Whapi.Cloud (hosted gateway, free Sandbox plan).
-// WhatsApp itself has no official API for statuses, so the gateway links the number
-// like WhatsApp Web (QR scan). A WhatsApp account with a saved Whapi token posts on its
-// own; one without a token keeps the one-tap manual flow.
-import { encrypt, decrypt } from './crypto.js';
-
-const base = (env) => env.WHAPI_BASE || 'https://gate.whapi.cloud';
-
+// Automatic WhatsApp statuses through our own gateway (src/wa/gateway.js), a Durable
+// Object per WhatsApp account running inside Cloudflare. WhatsApp has no official API
+// for statuses, so the gateway links the number like WhatsApp Web (QR scan).
+// A WhatsApp account with token_enc = 'gateway' posts on its own; others keep the
+// one-tap manual flow.
 export class WhatsAppError extends Error {}
 
-async function whapi(env, token, path, { method = 'GET', body } = {}) {
-  const res = await fetch(`${base(env)}${path}`, {
-    method,
-    headers: { Authorization: `Bearer ${token}`, Accept: 'application/json', ...(body ? { 'Content-Type': 'application/json' } : {}) },
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  const data = await res.json().catch(() => ({}));
-  return { status: res.status, data };
+export const GATEWAY = 'gateway';
+const DAY = 86400000;
+
+export function gatewayFor(env, accountId) {
+  if (!env.WA_GATEWAY) throw new WhatsAppError('بوابة واتساب مش متفعّلة في Cloudflare');
+  return env.WA_GATEWAY.get(env.WA_GATEWAY.idFromName(`acc-${accountId}`));
 }
 
-const explain = (status, data) => {
-  if (status === 401 || status === 403) return 'التوكن غلط أو اتلغى. انسخه تاني من Whapi.';
-  if (status === 402) return 'خطة Whapi المجانية خلصت أو محتاجة تجديد (ادخل Whapi واعمل أي حاجة في القناة).';
-  if (status === 429) return 'Whapi: طلبات كتير، استنى شوية.';
-  return data?.error?.message || `Whapi error ${status}`;
-};
-
-// Connection state for the dialog: connected (with the number) or a QR to scan.
-export async function whatsappLinkState(env, token) {
-  const r = await whapi(env, token, '/users/login?wakeup=true&size=300');
-  if (r.status === 409) {
-    const h = await whapi(env, token, '/health').catch(() => ({ data: {} }));
-    const u = h.data?.user || {};
-    return { connected: true, phone: u.id ? String(u.id).split('@')[0] : null, name: u.name || null };
-  }
-  if (r.status !== 200) throw new WhatsAppError(explain(r.status, r.data));
-  return { connected: false, qr: r.data.base64 || null, expire: r.data.expire || 20, state: r.data.status };
-}
-
-// Save (or remove) the token on a WhatsApp account.
-export async function setWhatsAppToken(env, accountId, token) {
-  const acc = await env.DB.prepare("SELECT id FROM accounts WHERE id = ? AND platform = 'whatsapp'").bind(accountId).first();
+async function waAccount(env, accountId) {
+  const acc = await env.DB.prepare("SELECT id, token_enc FROM accounts WHERE id = ? AND platform = 'whatsapp'").bind(accountId).first();
   if (!acc) throw new WhatsAppError('حساب الواتساب مش موجود');
-  const t = String(token || '').trim();
-  if (!t) {
-    await env.DB.prepare("UPDATE accounts SET token_enc = '' WHERE id = ?").bind(acc.id).run();
-    return { auto: false };
-  }
-  if (!/^[A-Za-z0-9._-]{10,200}$/.test(t)) throw new WhatsAppError('التوكن شكله مش صح. انسخه من صفحة القناة في Whapi (API Token).');
-  const state = await whatsappLinkState(env, t);
-  await env.DB.prepare('UPDATE accounts SET token_enc = ? WHERE id = ?').bind(await encrypt(env.SESSION_SECRET, t), acc.id).run();
-  return { auto: true, ...state };
+  return acc;
 }
 
-export async function accountToken(env, accountId) {
-  const acc = await env.DB.prepare("SELECT token_enc FROM accounts WHERE id = ? AND platform = 'whatsapp'").bind(accountId).first();
-  if (!acc?.token_enc) throw new WhatsAppError('الحساب ده مش متفعّل تلقائي');
-  return decrypt(env.SESSION_SECRET, acc.token_enc);
+// The "⚡ تلقائي" dialog: QR to scan, or the linked number. Marks the account automatic once linked.
+export async function whatsappLink(env, accountId) {
+  const acc = await waAccount(env, accountId);
+  const s = await gatewayFor(env, acc.id).link();
+  if (s.connected && acc.token_enc !== GATEWAY) {
+    await env.DB.prepare('UPDATE accounts SET token_enc = ? WHERE id = ?').bind(GATEWAY, acc.id).run();
+  }
+  return s;
+}
+
+// Unlink the number and go back to manual sharing.
+export async function whatsappUnlink(env, accountId) {
+  const acc = await waAccount(env, accountId);
+  await gatewayFor(env, acc.id).logout().catch(() => {});
+  await env.DB.prepare("UPDATE accounts SET token_enc = '' WHERE id = ?").bind(acc.id).run();
+  return { ok: true };
 }
 
 // Post a status: every image/video becomes its own status (caption on the first one),
 // a post without media becomes a text status.
-export async function publishWhatsAppStatus(env, token, post, media) {
+export async function publishWhatsAppStatus(env, accountId, post, media) {
+  const gw = gatewayFor(env, accountId);
   const text = [post.message, post.link].filter(Boolean).join('\n\n');
   const ids = [];
-  const send = async (path, body) => {
-    const r = await whapi(env, token, path, { method: 'POST', body });
-    if (r.status >= 300 || r.data?.sent === false) {
-      if (r.status === 409 || /not auth|qr/i.test(r.data?.error?.message || '')) {
-        throw new Error('رقم الواتساب اتفصل من Whapi. افتح العملاء والحسابات ← ⚡ تلقائي، وامسح الكود تاني.');
-      }
-      throw new Error(explain(r.status, r.data));
-    }
-    ids.push(r.data?.message?.id || 'ok');
-  };
   if (!media.length) {
     if (!text) throw new Error('الحالة فاضية');
-    await send('/stories', { caption: text, background_color: '#FF128C7E', caption_color: '#FFFFFFFF', font_type: 'SYSTEM_BOLD' });
+    ids.push((await gw.postStatus({ text })).id);
   } else {
     for (const [i, m] of media.entries()) {
-      await send('/stories/send/media', {
-        media: m.url,
-        mime_type: m.type === 'video' ? 'video/mp4' : 'image/jpeg',
-        ...(i === 0 && text ? { caption: text.slice(0, 700) } : {}),
-      });
+      ids.push((await gw.postStatus({ media: m, caption: i === 0 ? text.slice(0, 700) : '' })).id);
     }
   }
   return ids.join(',');
+}
+
+// From the cron: once a day, bring every linked number online briefly so WhatsApp
+// keeps the link (it drops devices that stay offline about two weeks).
+export async function dailyWhatsAppKeepAlive(env) {
+  const key = 'wa_keepalive';
+  const last = Number((await env.DB.prepare('SELECT value FROM settings WHERE key = ?').bind(key).first())?.value) || 0;
+  if (Date.now() - last < DAY) return;
+  await env.DB.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').bind(key, String(Date.now())).run();
+  const { results } = await env.DB.prepare("SELECT id FROM accounts WHERE platform = 'whatsapp' AND token_enc = ?").bind(GATEWAY).all();
+  for (const { id } of results.slice(0, 20)) {
+    try { await gatewayFor(env, id).keepAlive(); } catch (err) { console.error('wa keepalive', id, err.message); }
+  }
 }
 
 // ---------- optional daily limit per WhatsApp number ----------

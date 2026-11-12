@@ -3,14 +3,12 @@ import { publishFacebook, publishInstagram, containerStatus, finishInstagram, me
 import { deleteVideo } from './media.js';
 import { notifyAll } from './push.js';
 import { EXTRA_PUBLISHERS, tiktokStatus } from './providers.js';
-import { publishWhatsAppStatus, waLimitReached, getWaLimit } from './whatsapp.js';
+import { publishWhatsAppStatus, waLimitReached, getWaLimit, GATEWAY } from './whatsapp.js';
 
 const PUBLISHERS = {
   facebook: publishFacebook,
   instagram: publishInstagram,
-  // WhatsApp statuses: automatic through Whapi when the account has a token,
-  // otherwise the post waits for you to share it in one tap.
-  whatsapp: async (env, _id, token, post) => (token ? publishWhatsAppStatus(env, token, post, mediaOf(post)) : { manual: true }),
+  // WhatsApp statuses: handled in publishPost (automatic gateway or one-tap manual).
 };
 
 const PROCESSING_TIMEOUT = 45 * 60 * 1000; // give up on an Instagram video after 45 minutes
@@ -51,13 +49,16 @@ export async function publishPost(env, postId) {
         throw new Error(`وصلت للحد اليومي لحالات الرقم ده (${await getWaLimit(env)} في اليوم). اتنشرت على باقي الحسابات بس، وتقدر تعيد المحاولة بكرة.`);
       }
       let result;
-      if (EXTRA_PUBLISHERS[t.platform]) {
+      if (t.platform === 'whatsapp') {
+        // Linked to our gateway: posts on its own. Otherwise waits for you to share it in one tap.
+        result = t.token_enc === GATEWAY ? await publishWhatsAppStatus(env, t.account_id, post, mediaOf(post)) : { manual: true };
+      } else if (EXTRA_PUBLISHERS[t.platform]) {
         // YouTube / LinkedIn / TikTok manage (and refresh) their own tokens.
         result = await EXTRA_PUBLISHERS[t.platform](env, { id: t.account_id, external_id: t.external_id, token_enc: t.token_enc }, post, mediaOf(post));
       } else {
         const fn = PUBLISHERS[t.platform];
         if (!fn) throw new Error('المنصة دي لسه مش مدعومة: ' + t.platform);
-        const token = t.platform === 'whatsapp' && !t.token_enc ? '' : await decrypt(env.SESSION_SECRET, t.token_enc);
+        const token = await decrypt(env.SESSION_SECRET, t.token_enc);
         result = await fn(env, t.external_id, token, post);
       }
       if (result && result.manual) {

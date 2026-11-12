@@ -5,7 +5,7 @@ import { createInvite, revokeInvites } from './invite.js';
 import { buildReport, createReportLink, clientForReportLink } from './reports.js';
 import { adsOverview, setObjectStatus, setBudget, campaignDetails, pagePosts, boostPost, AdsError } from './ads.js';
 import { providersStatus } from './providers.js';
-import { whatsappLinkState, setWhatsAppToken, accountToken, WhatsAppError, getWaLimit, setWaLimit, checkWaLimit } from './whatsapp.js';
+import { whatsappLink, whatsappUnlink, WhatsAppError, GATEWAY, getWaLimit, setWaLimit, checkWaLimit } from './whatsapp.js';
 import { syncFromSaved, syncStatus, ignoreKeys, clearIgnored } from './sync.js';
 import { publishPost, finalizePost } from './publisher.js';
 import { publicKey as pushPublicKey, subscribe as pushSubscribe, notifyAll } from './push.js';
@@ -333,11 +333,11 @@ async function route(req, env, url) {
   }
 
   // Automatic statuses (Whapi): save the token, show the QR / connection state.
-  let wa = path.match(/^\/whatsapp\/accounts\/(\d+)\/(token|link)$/);
+  let wa = path.match(/^\/whatsapp\/accounts\/(\d+)\/(link|unlink)$/);
   if (wa) {
     try {
-      if (wa[2] === 'token' && method === 'PUT') return json(await setWhatsAppToken(env, Number(wa[1]), (await body(req)).token));
-      if (wa[2] === 'link' && method === 'GET') return json(await whatsappLinkState(env, await accountToken(env, Number(wa[1]))));
+      if (wa[2] === 'link' && method === 'GET') return json(await whatsappLink(env, Number(wa[1])));
+      if (wa[2] === 'unlink' && method === 'POST') return json(await whatsappUnlink(env, Number(wa[1])));
     } catch (err) {
       if (err instanceof WhatsAppError) bad(err.message);
       throw err;
@@ -393,7 +393,7 @@ async function route(req, env, url) {
   if (path === '/accounts' && method === 'GET') {
     const clientId = url.searchParams.get('client_id');
     const sql = `SELECT id, client_id, platform, external_id, name, picture, created_at,
-      CASE WHEN platform = 'whatsapp' AND token_enc != '' THEN 1 ELSE 0 END AS auto FROM accounts
+      CASE WHEN platform = 'whatsapp' AND token_enc = '${GATEWAY}' THEN 1 ELSE 0 END AS auto FROM accounts
       ${clientId ? 'WHERE client_id = ?' : ''} ORDER BY platform, name`;
     const stmt = clientId ? db.prepare(sql).bind(clientId) : db.prepare(sql);
     return json((await stmt.all()).results);

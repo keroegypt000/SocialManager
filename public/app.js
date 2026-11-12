@@ -573,76 +573,64 @@ function clientCard(c, accounts, clients) {
     </div>`;
 }
 
-// ---------- automatic WhatsApp statuses (Whapi.Cloud) ----------
+// ---------- automatic WhatsApp statuses (our own gateway inside Cloudflare) ----------
 function openWhatsAppAuto(accountId, name, isAuto, done) {
   const dlg = document.createElement('dialog');
   dlg.className = 'dialog';
   dlg.innerHTML = `<form method="dialog" class="dlg-body">
     <div class="dlg-head"><b>⚡ حالات واتساب تلقائي: ${esc(name)}</b><button class="btn small dlg-close" value="close">✕</button></div>
-    <div id="wa-state"></div>
-    <ol class="wa-steps small">
-      <li>ادخل <a href="https://panel.whapi.cloud/register" target="_blank" rel="noopener">whapi.cloud</a> واعمل حساب مجاني</li>
-      <li>هتلاقي قناة <b>Sandbox</b> جاهزة. افتحها وانسخ الـ <b>API Token</b></li>
-      <li>الصقه هنا ودوس <b>حفظ</b>، وهيظهرلك كود QR</li>
-      <li>من موبايل صاحب الرقم: واتساب ← <b>الأجهزة المرتبطة</b> ← <b>ربط جهاز</b> ← امسح الكود</li>
-    </ol>
-    <div class="field"><label>API Token</label><input name="token" dir="ltr" autocomplete="off" placeholder="${isAuto ? '•••••• (محفوظ، اكتب جديد لو عايز تغيّره)' : 'الصق التوكن هنا'}"></div>
-    <div class="notice small" style="margin:0">⚠️ الطريقة دي مش رسمية من واتساب (زي WhatsApp Web بالظبط). استخدمها بهدوء: كام حالة في اليوم. النشر الكتير جداً ممكن يعرّض الرقم للحظر.<br>
-      الخطة المجانية: حوالي 150 رسالة في اليوم و 1000 طلب في الشهر لكل رقم، وده كفاية لحالات عميل واحد. كل عميل محتاج حساب Whapi لوحده.</div>
+    <div id="wa-state"><div class="muted small">بيتصل بواتساب…</div></div>
+    <div class="notice small" style="margin:0">⚠️ الربط ده زي WhatsApp Web بالظبط، ومش رسمي من واتساب. استخدمه بهدوء (حط حد يومي من صفحة 📱 حالات واتساب). الحالة بتوصل لجهات الاتصال اللي على الرقم.</div>
     <div id="wa-err" class="notice bad" hidden></div>
-    <div class="dlg-actions" style="border:0;padding:0">
-      <button type="button" class="btn primary" data-save>حفظ</button>
-      ${isAuto ? '<button type="button" class="btn danger" data-off>رجّعها يدوي</button>' : ''}
-    </div>
+    <div class="dlg-actions" style="border:0;padding:0" id="wa-actions"></div>
   </form>`;
   document.body.appendChild(dlg);
   let timer = null;
-  dlg.addEventListener('close', () => { clearTimeout(timer); dlg.remove(); done(); });
-  const stateBox = dlg.querySelector('#wa-state');
+  let closed = false;
+  dlg.addEventListener('close', () => { closed = true; clearTimeout(timer); dlg.remove(); done(); });
+  const box = dlg.querySelector('#wa-state');
   const errBox = dlg.querySelector('#wa-err');
-  const showErr = (m) => { errBox.textContent = m; errBox.hidden = !m; };
+  const actions = dlg.querySelector('#wa-actions');
+  const showErr = (m) => { errBox.textContent = m || ''; errBox.hidden = !m; };
 
   const render = (s) => {
     if (s.connected) {
-      stateBox.innerHTML = `<div class="notice ok">✅ متوصّل${s.phone ? ` بالرقم <b dir="ltr">+${esc(s.phone)}</b>` : ''}${s.name ? ` (${esc(s.name)})` : ''}. الحالات اللي هتتجدول على الحساب ده هتتنشر لوحدها في ميعادها.</div>`;
+      const when = (ms) => (ms ? new Date(ms).toLocaleString('ar-EG') : '—');
+      box.innerHTML = `<div class="notice ok">✅ مربوط${s.phone ? ` بالرقم <b dir="ltr">+${esc(s.phone)}</b>` : ''}${s.name ? ` (${esc(s.name)})` : ''}.<br>
+        الحالات اللي هتتجدول على الحساب ده هتتنشر لوحدها في ميعادها.</div>
+        <div class="small">👥 جهات الاتصال اللي هتشوف الحالة: <b>${fmtNum(s.contacts)}</b>${s.contacts ? '' : ' <span class="muted">(بتوصل من الموبايل خلال دقايق بعد الربط، سيب واتساب مفتوح على الموبايل شوية)</span>'}<br>
+        <span class="muted">آخر اتصال: ${esc(when(s.last_open))}</span></div>`;
+      actions.innerHTML = '<button type="button" class="btn danger" data-unlink>افصل الرقم ورجّعها يدوي</button>';
+      actions.querySelector('[data-unlink]').onclick = async () => {
+        if (!(await askConfirm('الرقم هيتشال من الأجهزة المرتبطة، والحالات هترجع تيجيلك إشعار وتنشرها بإيدك. تمام؟'))) return;
+        await api(`/whatsapp/accounts/${accountId}/unlink`, { method: 'POST' });
+        toast('اتفصل، ورجعت يدوي');
+        dlg.close();
+      };
+      // Keep refreshing while contacts are still arriving.
+      if (!s.contacts) timer = setTimeout(poll, 8000);
       return;
     }
-    stateBox.innerHTML = `<div class="wa-qr">${s.qr ? `<img src="${s.qr.startsWith('data:') ? s.qr : `data:image/png;base64,${s.qr}`}" alt="QR">` : '<div class="muted small">بيجهّز الكود…</div>'}
-      <div class="small">امسح الكود ده من واتساب صاحب الرقم: <b>الإعدادات ← الأجهزة المرتبطة ← ربط جهاز</b>. الكود بيتجدد لوحده.</div></div>`;
-    timer = setTimeout(poll, Math.min(Math.max((s.expire || 20) * 1000, 5000), 20000));
+    box.innerHTML = `<div class="wa-qr">${s.qr ? `<div class="wa-qr-img">${s.qr}</div>` : '<div class="muted small">بيجهّز الكود…</div>'}
+      <ol class="wa-steps small">
+        <li>افتح واتساب على موبايل صاحب الرقم</li>
+        <li><b>الإعدادات</b> (أو ⋮) ← <b>الأجهزة المرتبطة</b> ← <b>ربط جهاز</b></li>
+        <li>امسح الكود ده. الكود بيتجدد لوحده</li>
+      </ol></div>`;
+    actions.innerHTML = '';
+    timer = setTimeout(poll, 3000);
   };
   const poll = async () => {
+    if (closed) return;
     try {
       render(await api(`/whatsapp/accounts/${accountId}/link`));
       showErr('');
     } catch (err) {
       showErr(err.message);
+      timer = setTimeout(poll, 6000);
     }
   };
-  if (isAuto) poll();
-
-  dlg.querySelector('[data-save]').onclick = async (e) => {
-    const token = dlg.querySelector('form').elements.token.value.trim();
-    if (!token) { showErr('الصق التوكن الأول'); return; }
-    e.target.disabled = true;
-    clearTimeout(timer);
-    try {
-      const s = await api(`/whatsapp/accounts/${accountId}/token`, { method: 'PUT', body: { token } });
-      showErr('');
-      render(s);
-      toast('اتحفظ ⚡');
-    } catch (err) {
-      showErr(err.message);
-    } finally {
-      e.target.disabled = false;
-    }
-  };
-  dlg.querySelector('[data-off]')?.addEventListener('click', async () => {
-    if (!(await askConfirm('الحالات هترجع تيجيلك إشعار وتنشرها بإيدك. تمام؟'))) return;
-    await api(`/whatsapp/accounts/${accountId}/token`, { method: 'PUT', body: { token: '' } });
-    toast('رجعت يدوي');
-    dlg.close();
-  });
+  poll();
   dlg.showModal();
 }
 
