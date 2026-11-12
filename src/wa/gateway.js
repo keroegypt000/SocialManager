@@ -3,6 +3,7 @@
 // (QR scan), keeps the login keys in its own storage, and connects only when needed:
 // while you scan the QR, to post a status, and once a day to stay linked and refresh
 // the contact list (statuses go to these contacts).
+import './patches.js'; // must run before Baileys encodes anything
 import { DurableObject } from 'cloudflare:workers';
 import makeWASocket, { initAuthCreds, BufferJSON, DisconnectReason, generateWAMessageFromContent } from 'baileys';
 import { prepareStatusMedia } from './media.js';
