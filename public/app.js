@@ -107,13 +107,13 @@ ${inv.url}`;
 }
 
 // In-page text question; resolves to the text, or null if cancelled.
-function askText(message, placeholder = '') {
+function askText(message, placeholder = '', value = '') {
   return new Promise((resolve) => {
     const dlg = document.createElement('dialog');
     dlg.className = 'dialog confirm-dialog';
     dlg.innerHTML = `<form method="dialog" class="dlg-body">
       <label style="font-weight:600;line-height:1.8">${esc(message)}</label>
-      <input name="v" placeholder="${esc(placeholder)}" autofocus>
+      <input name="v" placeholder="${esc(placeholder)}" value="${esc(value)}" autofocus>
       <div class="dlg-actions" style="border:0;padding:0">
         <button class="btn primary" value="ok">تمام</button>
         <button class="btn" value="cancel" formnovalidate>إلغاء</button>
@@ -511,6 +511,23 @@ async function renderClients(main, params) {
       renderClients(main, new URLSearchParams());
     };
   });
+  main.querySelectorAll('[data-rename-client]').forEach((b) => {
+    b.onclick = async () => {
+      const c = clients.find((x) => String(x.id) === b.dataset.renameClient);
+      const name = await askText('اسم العميل:', 'اسم العميل', c.name);
+      if (name === null || !name.trim() || name.trim() === c.name) return;
+      try {
+        await api(`/clients/${c.id}`, { method: 'PUT', body: { name: name.trim(), color: c.color, notes: c.notes } });
+        toast('الاسم اتغيّر ✅');
+        renderClients(main, new URLSearchParams());
+      } catch (err) {
+        toast(err.message);
+      }
+    };
+  });
+  main.querySelectorAll('[data-wa-auto]').forEach((b) => {
+    b.onclick = () => openWhatsAppAuto(Number(b.dataset.waAuto), b.dataset.name, b.classList.contains('on'), () => renderClients(main, new URLSearchParams()));
+  });
   main.querySelectorAll('[data-del-client]').forEach((b) => {
     b.onclick = async () => {
       if (!(await askConfirm('حذف العميل هيمسح كل حساباته ومنشوراته من المنصة. متأكد؟'))) return;
@@ -527,6 +544,7 @@ function clientCard(c, accounts, clients) {
       <div class="client-head">
         <span class="dot" style="background:${esc(c.color)};width:14px;height:14px"></span>
         <h2>${esc(c.name)}</h2>
+        <button class="btn small" data-rename-client="${c.id}" title="غيّر اسم العميل">✏️ تعديل</button>
         <button class="btn small danger" data-del-client="${c.id}">حذف</button>
       </div>
       ${accounts.map((a) => `
@@ -534,6 +552,9 @@ function clientCard(c, accounts, clients) {
           ${a.picture ? `<img src="${esc(a.picture)}" alt="">` : '<img alt="">'}
           <span class="name">${esc(a.name)}</span>
           ${platformTag(a.platform)}
+          ${a.platform === 'whatsapp' ? (a.auto
+            ? `<button class="btn small wa-auto on" data-wa-auto="${a.id}" data-name="${esc(a.name)}" title="بتتنشر لوحدها">⚡ تلقائي</button>`
+            : `<button class="btn small wa-auto" data-wa-auto="${a.id}" data-name="${esc(a.name)}" title="خلّي الحالات تتنشر لوحدها">⚡ خليها تلقائي</button>`) : ''}
           ${others.length ? `<select class="move" data-move-account="${a.id}" title="نقل لعميل تاني">
             <option value="">نقل ←</option>
             ${others.map((o) => `<option value="${o.id}">${esc(o.name)}</option>`).join('')}
@@ -550,6 +571,79 @@ function clientCard(c, accounts, clients) {
         <a class="btn small" href="#/compose?client=${c.id}">منشور جديد</a>
       </div>
     </div>`;
+}
+
+// ---------- automatic WhatsApp statuses (Whapi.Cloud) ----------
+function openWhatsAppAuto(accountId, name, isAuto, done) {
+  const dlg = document.createElement('dialog');
+  dlg.className = 'dialog';
+  dlg.innerHTML = `<form method="dialog" class="dlg-body">
+    <div class="dlg-head"><b>⚡ حالات واتساب تلقائي: ${esc(name)}</b><button class="btn small dlg-close" value="close">✕</button></div>
+    <div id="wa-state"></div>
+    <ol class="wa-steps small">
+      <li>ادخل <a href="https://panel.whapi.cloud/register" target="_blank" rel="noopener">whapi.cloud</a> واعمل حساب مجاني</li>
+      <li>هتلاقي قناة <b>Sandbox</b> جاهزة. افتحها وانسخ الـ <b>API Token</b></li>
+      <li>الصقه هنا ودوس <b>حفظ</b>، وهيظهرلك كود QR</li>
+      <li>من موبايل صاحب الرقم: واتساب ← <b>الأجهزة المرتبطة</b> ← <b>ربط جهاز</b> ← امسح الكود</li>
+    </ol>
+    <div class="field"><label>API Token</label><input name="token" dir="ltr" autocomplete="off" placeholder="${isAuto ? '•••••• (محفوظ، اكتب جديد لو عايز تغيّره)' : 'الصق التوكن هنا'}"></div>
+    <div class="notice small" style="margin:0">⚠️ الطريقة دي مش رسمية من واتساب (زي WhatsApp Web بالظبط). استخدمها بهدوء: كام حالة في اليوم. النشر الكتير جداً ممكن يعرّض الرقم للحظر.<br>
+      الخطة المجانية: حوالي 150 رسالة في اليوم و 1000 طلب في الشهر لكل رقم، وده كفاية لحالات عميل واحد. كل عميل محتاج حساب Whapi لوحده.</div>
+    <div id="wa-err" class="notice bad" hidden></div>
+    <div class="dlg-actions" style="border:0;padding:0">
+      <button type="button" class="btn primary" data-save>حفظ</button>
+      ${isAuto ? '<button type="button" class="btn danger" data-off>رجّعها يدوي</button>' : ''}
+    </div>
+  </form>`;
+  document.body.appendChild(dlg);
+  let timer = null;
+  dlg.addEventListener('close', () => { clearTimeout(timer); dlg.remove(); done(); });
+  const stateBox = dlg.querySelector('#wa-state');
+  const errBox = dlg.querySelector('#wa-err');
+  const showErr = (m) => { errBox.textContent = m; errBox.hidden = !m; };
+
+  const render = (s) => {
+    if (s.connected) {
+      stateBox.innerHTML = `<div class="notice ok">✅ متوصّل${s.phone ? ` بالرقم <b dir="ltr">+${esc(s.phone)}</b>` : ''}${s.name ? ` (${esc(s.name)})` : ''}. الحالات اللي هتتجدول على الحساب ده هتتنشر لوحدها في ميعادها.</div>`;
+      return;
+    }
+    stateBox.innerHTML = `<div class="wa-qr">${s.qr ? `<img src="${s.qr.startsWith('data:') ? s.qr : `data:image/png;base64,${s.qr}`}" alt="QR">` : '<div class="muted small">بيجهّز الكود…</div>'}
+      <div class="small">امسح الكود ده من واتساب صاحب الرقم: <b>الإعدادات ← الأجهزة المرتبطة ← ربط جهاز</b>. الكود بيتجدد لوحده.</div></div>`;
+    timer = setTimeout(poll, Math.min(Math.max((s.expire || 20) * 1000, 5000), 20000));
+  };
+  const poll = async () => {
+    try {
+      render(await api(`/whatsapp/accounts/${accountId}/link`));
+      showErr('');
+    } catch (err) {
+      showErr(err.message);
+    }
+  };
+  if (isAuto) poll();
+
+  dlg.querySelector('[data-save]').onclick = async (e) => {
+    const token = dlg.querySelector('form').elements.token.value.trim();
+    if (!token) { showErr('الصق التوكن الأول'); return; }
+    e.target.disabled = true;
+    clearTimeout(timer);
+    try {
+      const s = await api(`/whatsapp/accounts/${accountId}/token`, { method: 'PUT', body: { token } });
+      showErr('');
+      render(s);
+      toast('اتحفظ ⚡');
+    } catch (err) {
+      showErr(err.message);
+    } finally {
+      e.target.disabled = false;
+    }
+  };
+  dlg.querySelector('[data-off]')?.addEventListener('click', async () => {
+    if (!(await askConfirm('الحالات هترجع تيجيلك إشعار وتنشرها بإيدك. تمام؟'))) return;
+    await api(`/whatsapp/accounts/${accountId}/token`, { method: 'PUT', body: { token: '' } });
+    toast('رجعت يدوي');
+    dlg.close();
+  });
+  dlg.showModal();
 }
 
 // ---------- connect: pick which pages belong to the client ----------

@@ -3,12 +3,14 @@ import { publishFacebook, publishInstagram, containerStatus, finishInstagram, me
 import { deleteVideo } from './media.js';
 import { notifyAll } from './push.js';
 import { EXTRA_PUBLISHERS, tiktokStatus } from './providers.js';
+import { publishWhatsAppStatus } from './whatsapp.js';
 
 const PUBLISHERS = {
   facebook: publishFacebook,
   instagram: publishInstagram,
-  // WhatsApp has no API for statuses: the post waits for you to share it in one tap.
-  whatsapp: async () => ({ manual: true }),
+  // WhatsApp statuses: automatic through Whapi when the account has a token,
+  // otherwise the post waits for you to share it in one tap.
+  whatsapp: async (env, _id, token, post) => (token ? publishWhatsAppStatus(env, token, post, mediaOf(post)) : { manual: true }),
 };
 
 const PROCESSING_TIMEOUT = 45 * 60 * 1000; // give up on an Instagram video after 45 minutes
@@ -52,7 +54,7 @@ export async function publishPost(env, postId) {
       } else {
         const fn = PUBLISHERS[t.platform];
         if (!fn) throw new Error('المنصة دي لسه مش مدعومة: ' + t.platform);
-        const token = t.platform === 'whatsapp' ? '' : await decrypt(env.SESSION_SECRET, t.token_enc);
+        const token = t.platform === 'whatsapp' && !t.token_enc ? '' : await decrypt(env.SESSION_SECRET, t.token_enc);
         result = await fn(env, t.external_id, token, post);
       }
       if (result && result.manual) {

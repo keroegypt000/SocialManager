@@ -5,6 +5,7 @@ import { createInvite, revokeInvites } from './invite.js';
 import { buildReport, createReportLink, clientForReportLink } from './reports.js';
 import { adsOverview, setObjectStatus, setBudget, campaignDetails, pagePosts, boostPost, AdsError } from './ads.js';
 import { providersStatus } from './providers.js';
+import { whatsappLinkState, setWhatsAppToken, accountToken, WhatsAppError } from './whatsapp.js';
 import { syncFromSaved, syncStatus, ignoreKeys, clearIgnored } from './sync.js';
 import { publishPost, finalizePost } from './publisher.js';
 import { publicKey as pushPublicKey, subscribe as pushSubscribe, notifyAll } from './push.js';
@@ -323,6 +324,18 @@ async function route(req, env, url) {
     return json(row, 201);
   }
 
+  // Automatic statuses (Whapi): save the token, show the QR / connection state.
+  let wa = path.match(/^\/whatsapp\/accounts\/(\d+)\/(token|link)$/);
+  if (wa) {
+    try {
+      if (wa[2] === 'token' && method === 'PUT') return json(await setWhatsAppToken(env, Number(wa[1]), (await body(req)).token));
+      if (wa[2] === 'link' && method === 'GET') return json(await whatsappLinkState(env, await accountToken(env, Number(wa[1]))));
+    } catch (err) {
+      if (err instanceof WhatsAppError) bad(err.message);
+      throw err;
+    }
+  }
+
   if (path === '/whatsapp/count' && method === 'GET') {
     const r = await db.prepare("SELECT COUNT(*) AS n FROM post_targets WHERE status = 'manual'").first();
     return json({ count: r.n });
@@ -368,7 +381,8 @@ async function route(req, env, url) {
   // Accounts
   if (path === '/accounts' && method === 'GET') {
     const clientId = url.searchParams.get('client_id');
-    const sql = `SELECT id, client_id, platform, external_id, name, picture, created_at FROM accounts
+    const sql = `SELECT id, client_id, platform, external_id, name, picture, created_at,
+      CASE WHEN platform = 'whatsapp' AND token_enc != '' THEN 1 ELSE 0 END AS auto FROM accounts
       ${clientId ? 'WHERE client_id = ?' : ''} ORDER BY platform, name`;
     const stmt = clientId ? db.prepare(sql).bind(clientId) : db.prepare(sql);
     return json((await stmt.all()).results);
