@@ -1324,8 +1324,8 @@ function reportHtml(r) {
         </div>
         <div class="kpis">
           ${kpi('المتابعين', k.followers, changeHtml)}
-          ${kpi('المشاهدات', k.views)}
-          ${kpi('الوصول', k.reach)}
+          ${kpi('المشاهدات', k.views, k.views_from_posts ? '<div class="kpi-change muted">مجموع المنشورات</div>' : '')}
+          ${kpi('الوصول', k.reach, k.reach_from_posts ? '<div class="kpi-change muted">مجموع المنشورات</div>' : '')}
           ${kpi('التفاعل', k.engagement, rate ? `<div class="kpi-change">${rate} من الوصول</div>` : '')}
           ${kpi('المنشورات', k.posts)}
         </div>
@@ -1530,46 +1530,209 @@ async function renderAds(main, params) {
     const [l, cls] = map[s] || [s, ''];
     return `<span class="badge ${cls}">${esc(l)}</span>`;
   };
+  const statusBtn = (o, accId) => {
+    if (o.status === 'ACTIVE') return `<button class="btn small" data-status="${esc(o.id)}" data-acc-id="${accId}" data-to="PAUSED" title="وقّف">⏸</button>`;
+    if (o.status === 'PAUSED') return `<button class="btn small primary" data-status="${esc(o.id)}" data-acc-id="${accId}" data-to="ACTIVE" title="شغّل">▶</button>`;
+    return '';
+  };
+  const actions = (o, accId, { budget = true, del = true } = {}) => `<div class="ad-actions">
+    ${statusBtn(o, accId)}
+    ${budget && (o.daily_budget || o.lifetime_budget) ? `<button class="btn small" data-budget="${esc(o.id)}" data-acc-id="${accId}" data-cur-budget="${esc(budgetText(o, ''))}" title="غيّر الميزانية">💰</button>` : ''}
+    ${del ? `<button class="btn small danger" data-status="${esc(o.id)}" data-acc-id="${accId}" data-to="DELETED" title="امسح">🗑</button>` : ''}
+  </div>`;
+  const statsCells = (o, cur) => `<td>${money(o.spend, cur)}</td><td>${fmtNum(o.impressions)}</td><td>${fmtNum(o.clicks)}</td>
+    <td>${o.result ? `${fmtNum(o.result.value)} ${esc(RESULT_LABEL[o.result.type] || '')}` : '—'}</td>`;
+
   $('#a-body').innerHTML = list.map((a) => `
     <section class="card report-acc" data-acc="${a.id}">
-      <div class="acc-head">${platformTag('meta_ads')} <h2>${esc(a.name)}</h2></div>
+      <div class="acc-head">${platformTag('meta_ads')} <h2>${esc(a.name)}</h2>
+        ${a.error ? '' : `<button class="btn primary small" data-new-camp="${a.id}" style="margin-inline-start:auto">➕ حملة جديدة</button>`}</div>
       ${a.error ? `<div class="notice bad">${esc(a.error)}</div>` : `
       ${adsTotalsHtml(a.totals, a.currency)}
       <h3>الحملات (${a.campaigns.length})</h3>
       ${a.campaigns.length ? `<div class="table-wrap"><table class="table">
-        <thead><tr><th>الحملة</th><th>الحالة</th><th>الهدف</th><th>الميزانية</th><th>المصروف</th><th>الظهور</th><th>النقرات</th><th>النتايج</th><th></th></tr></thead>
+        <thead><tr><th>الحملة</th><th>الحالة</th><th>الهدف</th><th>الميزانية</th><th>المصروف</th><th>الظهور</th><th>النقرات</th><th>النتايج</th><th>تحكم</th></tr></thead>
         <tbody>${a.campaigns.map((c) => `<tr>
-          <td><b>${esc(c.name)}</b></td>
+          <td><button class="linkish" data-details="${esc(c.id)}" data-acc-id="${a.id}" title="المجموعات والإعلانات">▸ <b>${esc(c.name)}</b></button></td>
           <td>${statusBadge(c)}</td>
           <td>${esc(OBJECTIVES[c.objective] || c.objective || '')}</td>
           <td class="small">${esc(budgetText(c, a.currency))}</td>
-          <td>${money(c.spend, a.currency)}</td>
-          <td>${fmtNum(c.impressions)}</td>
-          <td>${fmtNum(c.clicks)}</td>
-          <td>${c.result ? `${fmtNum(c.result.value)} ${esc(RESULT_LABEL[c.result.type] || '')}` : '—'}</td>
-          <td>${c.status === 'ACTIVE'
-            ? `<button class="btn small" data-camp="${esc(c.id)}" data-to="PAUSED">⏸ وقّف</button>`
-            : c.status === 'PAUSED' ? `<button class="btn small primary" data-camp="${esc(c.id)}" data-to="ACTIVE">▶ شغّل</button>` : ''}</td>
-        </tr>`).join('')}</tbody></table></div>` : '<p class="muted small">مفيش حملات. تقدر تروّج أي منشور فيسبوك اتنشر من صفحة <a href="#/posts">المنشورات</a> بزرار 📢 روّج.</p>'}`}
+          ${statsCells(c, a.currency)}
+          <td>${actions(c, a.id)}</td>
+        </tr><tr class="camp-details" data-for="${esc(c.id)}" hidden><td colspan="9"></td></tr>`).join('')}</tbody></table></div>`
+        : '<p class="muted small">مفيش حملات لسه. دوس <b>➕ حملة جديدة</b> فوق.</p>'}`}
     </section>`).join('');
 
-  main.querySelectorAll('[data-camp]').forEach((b) => {
-    b.onclick = async () => {
-      const to = b.dataset.to;
-      const ok = await askConfirm(to === 'ACTIVE'
-        ? 'الحملة هتشتغل وهتبدأ تصرف من الميزانية بتاعتها. متأكد؟'
-        : 'الحملة هتقف ومش هتصرف لحد ما تشغّلها تاني.', { ok: to === 'ACTIVE' ? 'شغّلها' : 'وقّفها' });
-      if (!ok) return;
-      b.disabled = true;
-      try {
-        await api(`/ads/campaigns/${b.dataset.camp}/status`, { method: 'POST', body: { account_id: Number(b.closest('[data-acc]').dataset.acc), status: to } });
-        toast(to === 'ACTIVE' ? 'الحملة اشتغلت ▶' : 'الحملة وقفت ⏸');
-        renderAds(main, params);
-      } catch (err) {
-        toast(err.message);
-        b.disabled = false;
-      }
+  const accCurrency = (accId) => list.find((x) => String(x.id) === String(accId))?.currency || '';
+
+  async function loadDetails(row, campId, accId) {
+    const cell = row.querySelector('td');
+    cell.innerHTML = '<div class="muted small">بيجيب المجموعات والإعلانات…</div>';
+    try {
+      const d = await api(`/ads/accounts/${accId}/campaigns/${campId}?from=${from}&to=${to}`);
+      const cur = accCurrency(accId);
+      const gender = (g) => (g?.length === 1 ? (g[0] === 1 ? 'رجالة' : 'ستات') : 'الكل');
+      cell.innerHTML = `<div class="camp-inner">
+        <b>المجموعات الإعلانية (الجمهور والميزانية)</b>
+        <table class="table small"><thead><tr><th>المجموعة</th><th>الحالة</th><th>الجمهور</th><th>الميزانية</th><th>المصروف</th><th>الظهور</th><th>النقرات</th><th>النتايج</th><th>تحكم</th></tr></thead>
+        <tbody>${d.adsets.map((s) => `<tr><td>${esc(s.name)}</td><td>${statusBadge(s)}</td>
+          <td class="small">${esc(s.audience.countries.join(', ') || '—')} · ${esc(String(s.audience.age_min ?? 18))}-${esc(String(s.audience.age_max ?? 65))} · ${gender(s.audience.genders)}</td>
+          <td class="small">${esc(budgetText(s, cur))}</td>${statsCells(s, cur)}<td>${actions(s, accId)}</td></tr>`).join('') || '<tr><td colspan="9" class="muted">مفيش</td></tr>'}</tbody></table>
+        <b>الإعلانات</b>
+        <table class="table small"><thead><tr><th>الإعلان</th><th>الحالة</th><th>المصروف</th><th>الظهور</th><th>النقرات</th><th>النتايج</th><th>تحكم</th></tr></thead>
+        <tbody>${d.ads.map((x) => `<tr><td>${x.thumbnail ? `<img class="ad-thumb" src="${esc(x.thumbnail)}" alt="">` : ''} ${esc(x.name)}</td><td>${statusBadge(x)}</td>
+          ${statsCells(x, cur)}<td>${actions(x, accId, { budget: false })}</td></tr>`).join('') || '<tr><td colspan="7" class="muted">مفيش</td></tr>'}</tbody></table>
+      </div>`;
+      wire(cell);
+    } catch (err) {
+      cell.innerHTML = `<div class="notice bad">${esc(err.message)}</div>`;
+    }
+  }
+
+  function wire(root) {
+    root.querySelectorAll('[data-details]').forEach((b) => {
+      b.onclick = () => {
+        const row = main.querySelector(`.camp-details[data-for="${b.dataset.details}"]`);
+        row.hidden = !row.hidden;
+        b.firstChild.textContent = row.hidden ? '▸ ' : '▾ ';
+        if (!row.hidden) loadDetails(row, b.dataset.details, b.dataset.accId);
+      };
+    });
+    root.querySelectorAll('[data-status]').forEach((b) => {
+      b.onclick = async () => {
+        const to = b.dataset.to;
+        const msg = {
+          ACTIVE: 'هيشتغل ويبدأ يصرف من الميزانية. متأكد؟',
+          PAUSED: 'هيقف ومش هيصرف لحد ما تشغّله تاني.',
+          DELETED: 'هيتمسح من حساب الإعلانات خالص ومش هينفع ترجّعه (الأرقام القديمة بتفضل في التقارير). متأكد؟',
+        }[to];
+        const ok = await askConfirm(msg, { ok: { ACTIVE: 'شغّل', PAUSED: 'وقّف', DELETED: 'امسح' }[to] });
+        if (!ok) return;
+        b.disabled = true;
+        try {
+          await api(`/ads/objects/${b.dataset.status}/status`, { method: 'POST', body: { account_id: Number(b.dataset.accId), status: to } });
+          toast({ ACTIVE: 'اشتغل ▶', PAUSED: 'وقف ⏸', DELETED: 'اتمسح 🗑' }[to]);
+          renderAds(main, params);
+        } catch (err) {
+          toast(err.message);
+          b.disabled = false;
+        }
+      };
+    });
+    root.querySelectorAll('[data-budget]').forEach((b) => {
+      b.onclick = async () => {
+        const v = await askText(`الميزانية الجديدة (دلوقتي: ${b.dataset.curBudget}). اكتب الرقم بس بعملة حساب الإعلانات`, 'مثلاً 100');
+        if (v == null || v === '') return;
+        const amount = Number(String(v).replace(/[٠-٩]/g, (d) => '٠١٢٣٤٥٦٧٨٩'.indexOf(d)).replace(',', '.'));
+        if (!(amount > 0)) { toast('اكتب رقم صحيح'); return; }
+        try {
+          await api(`/ads/objects/${b.dataset.budget}/budget`, { method: 'POST', body: { account_id: Number(b.dataset.accId), amount } });
+          toast('الميزانية اتغيرت 💰');
+          renderAds(main, params);
+        } catch (err) {
+          toast(err.message);
+        }
+      };
+    });
+  }
+  wire(main);
+  main.querySelectorAll('[data-new-camp]').forEach((b) => {
+    b.onclick = () => openNewCampaignDialog(clientId, list.find((x) => String(x.id) === b.dataset.newCamp), () => renderAds(main, params))
+      .catch((err) => toast(err.message));
+  });
+}
+
+// Audience + budget fields shared by "➕ حملة جديدة" and "📢 روّج".
+function adFormFields() {
+  return `
+    <div class="field"><label>الهدف</label><select name="objective">
+      <option value="engagement">تفاعل (لايكات وكومنتات وشير)</option>
+      <option value="awareness">وصول (يوصل لأكبر عدد ناس)</option></select></div>
+    <div class="row">
+      <div><label>الميزانية في اليوم</label><input name="budget" type="number" min="1" step="0.5" value="5" required></div>
+      <div><label>كام يوم</label><input name="days" type="number" min="1" max="90" value="7" required></div>
+    </div>
+    <div class="row">
+      <div><label>الدول (كود الدولة)</label><input name="countries" value="EG" dir="ltr" placeholder="EG, KW, SA"></div>
+      <div><label>السن من</label><input name="age_min" type="number" min="18" max="65" value="18"></div>
+      <div><label>لحد</label><input name="age_max" type="number" min="18" max="65" value="65"></div>
+      <div><label>النوع</label><select name="genders"><option value="">الكل</option><option value="1">رجالة</option><option value="2">ستات</option></select></div>
+    </div>
+    <label class="check"><input type="checkbox" name="start_now"> شغّلها على طول (من غير ما تعلّم عليها هتتعمل متوقفة)</label>
+    <div class="notice small" style="margin:0">الميزانية بعملة حساب الإعلانات. لو مش معلّم على "شغّلها على طول"، الإعلان مش هيصرف حاجة لحد ما تدوس ▶ من صفحة <b>📢 الإعلانات</b>.</div>`;
+}
+
+function adFormValues(f) {
+  const v = (n) => f.elements[n].value;
+  return {
+    objective: v('objective'), daily_budget: Number(v('budget')), days: Number(v('days')), countries: v('countries'),
+    age_min: Number(v('age_min')), age_max: Number(v('age_max')), genders: v('genders') ? Number(v('genders')) : null,
+    start_now: f.elements.start_now.checked,
+  };
+}
+
+async function submitAd(dlg, body) {
+  const box = dlg.querySelector('#b-err');
+  if (body.start_now) {
+    const ok = await askConfirm(`الإعلان هيشتغل على طول ويصرف ${body.daily_budget} في اليوم لمدة ${body.days} يوم. متأكد؟`, { ok: 'أيوه شغّله' });
+    if (!ok) return false;
+  }
+  try {
+    const r = await api('/ads/boost', { method: 'POST', body });
+    dlg.close();
+    toast(r.status === 'ACTIVE' ? 'الإعلان اتعمل واشتغل ✅' : 'الإعلان اتعمل ✅ (متوقف). شغّله من صفحة الإعلانات لما تكون جاهز');
+    return true;
+  } catch (err) {
+    box.textContent = err.message;
+    box.hidden = false;
+    return false;
+  }
+}
+
+// "➕ حملة جديدة": pick any post from the client's Facebook pages and promote it.
+async function openNewCampaignDialog(clientId, adAcc, done) {
+  const dlg = document.createElement('dialog');
+  dlg.className = 'dialog';
+  dlg.innerHTML = `<form method="dialog" class="dlg-body">
+    <div class="dlg-head"><b>➕ حملة جديدة: ${esc(adAcc.name)}</b><button class="btn small dlg-close" value="close">✕</button></div>
+    <label>اختار المنشور اللي هتروّجه</label>
+    <div class="post-pick" id="n-posts"><div class="muted small">بيجيب منشورات الصفحة…</div></div>
+    <div class="field"><label>اسم الحملة (اختياري)</label><input name="name" placeholder="مثلاً عرض الصيف"></div>
+    ${adFormFields()}
+    <div id="b-err" class="notice bad" hidden></div>
+    <div class="dlg-actions" style="border:0;padding:0"><button type="button" class="btn primary" data-go disabled>اعمل الحملة</button></div>
+  </form>`;
+  document.body.appendChild(dlg);
+  dlg.addEventListener('close', () => dlg.remove());
+  dlg.showModal();
+
+  let picked = null;
+  const posts = await api(`/ads/${clientId}/page-posts`);
+  const box = dlg.querySelector('#n-posts');
+  const ok = posts.filter((p) => !p.error);
+  const errs = posts.filter((p) => p.error);
+  box.innerHTML = (ok.length ? ok.map((p, i) => `
+    <button type="button" class="pick-post" data-i="${i}">
+      ${p.image ? `<img src="${esc(p.image)}" alt="">` : '<span class="pick-noimg">📝</span>'}
+      <span class="small"><b>${esc(p.page_name)}</b> · ${esc(new Date(p.time).toLocaleDateString('ar-EG'))}<br>${esc((p.text || '(من غير كلام)').slice(0, 90))}</span>
+    </button>`).join('') : '<div class="notice">مالقيناش منشورات على صفحات فيسبوك بتاعة العميل ده.</div>')
+    + errs.map((p) => `<div class="notice bad small">${esc(p.page_name)}: ${esc(p.error)}</div>`).join('');
+  box.querySelectorAll('.pick-post').forEach((b) => {
+    b.onclick = () => {
+      box.querySelectorAll('.pick-post').forEach((x) => x.classList.remove('on'));
+      b.classList.add('on');
+      picked = ok[Number(b.dataset.i)];
+      dlg.querySelector('[data-go]').disabled = false;
     };
+  });
+  dlg.querySelector('[data-go]').addEventListener('click', async (e) => {
+    if (!picked) return;
+    const f = dlg.querySelector('form');
+    e.target.disabled = true;
+    const name = f.elements.name.value.trim() || `ترويج: ${(picked.text || 'منشور').slice(0, 40)}`;
+    const done2 = await submitAd(dlg, { account_id: adAcc.id, page_account_id: picked.page_account_id, page_post_id: picked.id, name, ...adFormValues(f) });
+    if (done2) done();
+    else e.target.disabled = false;
   });
 }
 
@@ -1584,16 +1747,7 @@ async function openBoostDialog(post) {
     <div class="dlg-text muted small">${esc((post.message || '').slice(0, 140))}</div>
     ${!adAccounts.length ? `<div class="notice">العميل ده مفيش عنده حساب إعلانات مربوط. اربط فيسبوك تاني وعلّم على حساب الإعلانات.</div>` : `
     <div class="field"><label>حساب الإعلانات</label><select name="acc">${adAccounts.map((a) => `<option value="${a.id}">${esc(a.name)}</option>`).join('')}</select></div>
-    <div class="row">
-      <div><label>الميزانية في اليوم</label><input name="budget" type="number" min="1" step="0.5" value="5" required></div>
-      <div><label>كام يوم</label><input name="days" type="number" min="1" max="90" value="7" required></div>
-    </div>
-    <div class="row">
-      <div><label>الدول (كود الدولة)</label><input name="countries" value="EG" dir="ltr" placeholder="EG, KW, SA"></div>
-      <div><label>السن من</label><input name="age_min" type="number" min="18" max="65" value="18"></div>
-      <div><label>لحد</label><input name="age_max" type="number" min="18" max="65" value="65"></div>
-    </div>
-    <div class="notice small" style="margin:0">🛑 الإعلان هيتعمل <b>متوقف</b>، ومش هيصرف حاجة لحد ما تشغّله من صفحة <b>📢 الإعلانات</b>. الميزانية بعملة حساب الإعلانات.</div>
+    ${adFormFields()}
     <div id="b-err" class="notice bad" hidden></div>
     <div class="dlg-actions" style="border:0;padding:0"><button type="button" class="btn primary" data-go>اعمل الإعلان</button></div>`}
   </form>`;
@@ -1601,21 +1755,9 @@ async function openBoostDialog(post) {
   dlg.addEventListener('close', () => dlg.remove());
   dlg.querySelector('[data-go]')?.addEventListener('click', async (e) => {
     const f = dlg.querySelector('form');
-    const v = (n) => f.elements[n].value;
     e.target.disabled = true;
-    try {
-      await api('/ads/boost', { method: 'POST', body: {
-        account_id: Number(v('acc')), post_target_id: fbTarget.id, daily_budget: Number(v('budget')), days: Number(v('days')),
-        countries: v('countries'), age_min: Number(v('age_min')), age_max: Number(v('age_max')),
-      } });
-      dlg.close();
-      toast('اتعمل الإعلان ✅ (متوقف). شغّله من صفحة الإعلانات لما تكون جاهز');
-    } catch (err) {
-      const box = dlg.querySelector('#b-err');
-      box.textContent = err.message;
-      box.hidden = false;
-      e.target.disabled = false;
-    }
+    const ok = await submitAd(dlg, { account_id: Number(f.elements.acc.value), post_target_id: fbTarget.id, name: `ترويج: ${(post.message || 'منشور').slice(0, 40)}`, ...adFormValues(f) });
+    if (!ok) e.target.disabled = false;
   });
   dlg.showModal();
 }

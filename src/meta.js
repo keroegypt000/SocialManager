@@ -117,7 +117,19 @@ export async function metaCallback(env, url, { isAdmin = false } = {}) {
   const ads = await graph(env, 'me/adaccounts', {
     params: { access_token: long.access_token, fields: 'id,name,account_status,currency', limit: '100' },
   }).catch(() => null);
-  for (const ad of ads?.data || []) {
+  const adList = [...(ads?.data || [])];
+  // Ad accounts that live in a Business Manager don't always show up in me/adaccounts.
+  const biz = await graph(env, 'me/businesses', {
+    params: {
+      access_token: long.access_token, limit: '25',
+      fields: 'owned_ad_accounts.limit(100){id,name,currency},client_ad_accounts.limit(100){id,name,currency}',
+    },
+  }).catch(() => null);
+  for (const b of biz?.data || []) adList.push(...(b.owned_ad_accounts?.data || []), ...(b.client_ad_accounts?.data || []));
+  const seenAds = new Set();
+  for (const ad of adList) {
+    if (!ad?.id || seenAds.has(ad.id)) continue;
+    seenAds.add(ad.id);
     items.push({ platform: 'meta_ads', external_id: ad.id, name: `${ad.name || ad.id} (${ad.currency || ''})`.trim(), picture: null, token: long.access_token, page_id: null });
   }
   if (!items.length) return back(invite ? 'error=' + encodeURIComponent('مالقيناش صفحات. اتأكد إنك اخترت صفحتك في شاشة فيسبوك وإنك أدمن عليها.') : 'connected=0');
@@ -169,6 +181,8 @@ export async function savePending(env, token, keys) {
     }
   }
   stmts.push(env.DB.prepare('DELETE FROM pending_links WHERE token = ?').bind(token));
+  // New tokens/permissions: old cached reports are stale.
+  stmts.push(env.DB.prepare('DELETE FROM report_cache'));
   await env.DB.batch(stmts);
   return { clientId: pending.clientId, saved };
 }

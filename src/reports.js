@@ -11,7 +11,7 @@ import { decrypt } from './crypto.js';
 import { graph } from './meta.js';
 import { adsForReport } from './ads.js';
 
-const CACHE_MS = 6 * 3600 * 1000;
+const CACHE_MS = 2 * 3600 * 1000;
 const DAY = 86400000;
 
 const sec = (ms) => Math.floor(ms / 1000);
@@ -33,8 +33,47 @@ async function tryGraph(env, path, params, errors, label) {
   }
 }
 
+// Per-post insights through one Graph batch call (up to 50 posts per call), so a post
+// that doesn't support a metric only loses its own numbers, not everyone's.
+// Tries each metric set in order for the posts that failed the previous one.
+async function postInsights(env, token, ids, metricSets, errors, label) {
+  const found = new Map();
+  let pending = ids;
+  let lastErr = null;
+  for (const metrics of metricSets) {
+    if (!pending.length) break;
+    const failed = [];
+    for (let i = 0; i < pending.length; i += 50) {
+      const chunk = pending.slice(i, i + 50);
+      const batch = chunk.map((id) => ({ method: 'GET', relative_url: `${id}/insights?metric=${metrics}` }));
+      let res;
+      try {
+        res = await graph(env, '', { method: 'POST', params: { access_token: token, include_headers: 'false', batch: JSON.stringify(batch) } });
+      } catch (err) {
+        lastErr = err.message;
+        failed.push(...chunk);
+        continue;
+      }
+      chunk.forEach((id, j) => {
+        let body = {};
+        try { body = JSON.parse(res?.[j]?.body || '{}'); } catch { /* ignore */ }
+        if (res?.[j]?.code === 200 && Array.isArray(body.data)) {
+          found.set(id, Object.fromEntries(body.data.map((m) => [m.name, Number(m.values?.[0]?.value ?? m.total_value?.value) || 0])));
+        } else {
+          lastErr = body.error?.message || `code ${res?.[j]?.code}`;
+          failed.push(id);
+        }
+      });
+    }
+    pending = failed;
+  }
+  if (pending.length && lastErr) errors.push(`${label} (${pending.length} منشور): ${lastErr}`);
+  return found;
+}
+
 // ---------- Facebook page ----------
 async function facebookReport(env, acc, token, from, to) {
+  to = Math.min(to, Date.now()); // Graph rejects ranges that end in the future.
   const errors = [];
   const out = { platform: 'facebook', id: acc.id, name: acc.name, picture: acc.picture, kpis: {}, daily: [], posts: [], errors };
 
@@ -62,12 +101,18 @@ async function facebookReport(env, acc, token, from, to) {
   // Posts in the range with engagement counts (+ views/reach when the metrics are available).
   const baseFields = 'id,message,created_time,full_picture,permalink_url,shares,reactions.summary(true).limit(0),comments.summary(true).limit(0)';
   const params = { since: sec(from), until: sec(to), limit: '50', access_token: token };
-  let posts = await graph(env, `${acc.external_id}/published_posts`, {
-    params: { ...params, fields: `${baseFields},insights.metric(post_media_view,post_total_media_view_unique)` },
-  }).catch(() => null);
-  if (!posts) posts = await tryGraph(env, `${acc.external_id}/published_posts`, { ...params, fields: baseFields }, errors, 'المنشورات');
+  const posts = await tryGraph(env, `${acc.external_id}/published_posts`, { ...params, fields: baseFields }, errors, 'المنشورات');
+  const insights = await postInsights(env, token, (posts?.data || []).map((p) => p.id), [
+    'post_media_view,post_total_media_view_unique',
+    'post_media_view',
+    'post_impressions,post_impressions_unique',
+  ], errors, 'مشاهدات المنشورات');
   for (const p of posts?.data || []) {
-    const ins = Object.fromEntries((p.insights?.data || []).map((m) => [m.name, Number(m.values?.[0]?.value) || 0]));
+    const raw = insights.get(p.id) || {};
+    const ins = {
+      post_media_view: raw.post_media_view ?? raw.post_impressions,
+      post_total_media_view_unique: raw.post_total_media_view_unique ?? raw.post_impressions_unique,
+    };
     const reactions = p.reactions?.summary?.total_count || 0;
     const comments = p.comments?.summary?.total_count || 0;
     const shares = p.shares?.count || 0;
@@ -80,11 +125,20 @@ async function facebookReport(env, acc, token, from, to) {
   out.kpis.posts = out.posts.length;
   // Page-wide engagement unavailable: fall back to the sum over the period's posts.
   if (out.kpis.engagement == null && out.posts.length) out.kpis.engagement = sum(out.posts.map((p) => p.engagement));
+  // Same for views and reach when the account-wide numbers aren't available.
+  for (const k of ['views', 'reach']) {
+    const known = out.posts.filter((p) => p[k] != null);
+    if (out.kpis[k] == null && known.length) {
+      out.kpis[k] = sum(known.map((p) => p[k]));
+      out.kpis[`${k}_from_posts`] = true;
+    }
+  }
   return out;
 }
 
 // ---------- Instagram account ----------
 async function instagramReport(env, acc, token, from, to) {
+  to = Math.min(to, Date.now()); // Graph rejects ranges that end in the future.
   const errors = [];
   const out = { platform: 'instagram', id: acc.id, name: acc.name, picture: acc.picture, kpis: {}, daily: [], posts: [], errors };
 
@@ -126,12 +180,14 @@ async function instagramReport(env, acc, token, from, to) {
   // Posts in the range.
   const baseFields = 'id,caption,media_type,media_product_type,media_url,thumbnail_url,permalink,timestamp,like_count,comments_count';
   const params = { since: sec(from), until: sec(to), limit: '50', access_token: token };
-  let media = await graph(env, `${acc.external_id}/media`, {
-    params: { ...params, fields: `${baseFields},insights.metric(views,reach,shares,saved,total_interactions)` },
-  }).catch(() => null);
-  if (!media) media = await tryGraph(env, `${acc.external_id}/media`, { ...params, fields: baseFields }, errors, 'المنشورات');
+  const media = await tryGraph(env, `${acc.external_id}/media`, { ...params, fields: baseFields }, errors, 'المنشورات');
+  const insights = await postInsights(env, token, (media?.data || []).map((m) => m.id), [
+    'views,reach,shares,saved,total_interactions',
+    'views,reach',
+    'reach,saved,total_interactions',
+  ], errors, 'مشاهدات المنشورات');
   for (const m of media?.data || []) {
-    const ins = Object.fromEntries((m.insights?.data || []).map((x) => [x.name, Number(x.values?.[0]?.value) || 0]));
+    const ins = insights.get(m.id) || {};
     const likes = m.like_count || 0;
     const comments = m.comments_count || 0;
     const shares = ins.shares ?? 0;
@@ -147,6 +203,14 @@ async function instagramReport(env, acc, token, from, to) {
   out.kpis.posts = out.posts.length;
   // Page-wide engagement unavailable: fall back to the sum over the period's posts.
   if (out.kpis.engagement == null && out.posts.length) out.kpis.engagement = sum(out.posts.map((p) => p.engagement));
+  // Same for views and reach when the account-wide numbers aren't available.
+  for (const k of ['views', 'reach']) {
+    const known = out.posts.filter((p) => p[k] != null);
+    if (out.kpis[k] == null && known.length) {
+      out.kpis[k] = sum(known.map((p) => p[k]));
+      out.kpis[`${k}_from_posts`] = true;
+    }
+  }
   return out;
 }
 
@@ -177,7 +241,7 @@ export async function buildReport(env, clientId, from, to, { refresh = false } =
   const client = await env.DB.prepare('SELECT id, name, color FROM clients WHERE id = ?').bind(clientId).first();
   if (!client) throw new Error('العميل مش موجود');
 
-  const key = `${clientId}:${from}:${to}`;
+  const key = `v2:${clientId}:${from}:${to}`;
   if (!refresh) {
     const cached = await env.DB.prepare('SELECT json, created_at FROM report_cache WHERE key = ?').bind(key).first();
     if (cached && Date.now() - cached.created_at < CACHE_MS) return { ...JSON.parse(cached.json), cached_at: cached.created_at };
@@ -205,8 +269,11 @@ export async function buildReport(env, clientId, from, to, { refresh = false } =
     platform: await platformStats(env, clientId, from, to),
     ads: await adsForReport(env, clientId, from, to),
   };
-  await env.DB.prepare('INSERT OR REPLACE INTO report_cache (key, json, created_at) VALUES (?, ?, ?)')
-    .bind(key, JSON.stringify(report), Date.now()).run();
+  // Reports with missing numbers aren't cached, so the next look tries again.
+  if (!sections.some((s) => s.errors.length)) {
+    await env.DB.prepare('INSERT OR REPLACE INTO report_cache (key, json, created_at) VALUES (?, ?, ?)')
+      .bind(key, JSON.stringify(report), Date.now()).run();
+  }
   await env.DB.prepare('DELETE FROM report_cache WHERE created_at < ?').bind(Date.now() - 7 * DAY).run();
   return report;
 }

@@ -3,7 +3,7 @@ import { metaConfigured, readPending, savePending, mediaOf } from './meta.js';
 import { startVideo, putChunk, finishVideo, videoExists, MediaError } from './media.js';
 import { createInvite, revokeInvites } from './invite.js';
 import { buildReport, createReportLink, clientForReportLink } from './reports.js';
-import { adsOverview, setCampaignStatus, boostPost, AdsError } from './ads.js';
+import { adsOverview, setObjectStatus, setBudget, campaignDetails, pagePosts, boostPost, AdsError } from './ads.js';
 import { providersStatus } from './providers.js';
 import { publishPost, finalizePost } from './publisher.js';
 import { publicKey as pushPublicKey, subscribe as pushSubscribe, notifyAll } from './push.js';
@@ -248,10 +248,21 @@ async function route(req, env, url) {
   try {
     let ad = path.match(/^\/ads\/(\d+)$/);
     if (ad && method === 'GET') return json(await adsOverview(env, Number(ad[1]), url.searchParams.get('from'), url.searchParams.get('to')));
-    ad = path.match(/^\/ads\/campaigns\/(\d+)\/status$/);
+    ad = path.match(/^\/ads\/(\d+)\/page-posts$/);
+    if (ad && method === 'GET') return json(await pagePosts(env, Number(ad[1])));
+    ad = path.match(/^\/ads\/(?:campaigns|objects)\/(\d+)\/status$/);
     if (ad && method === 'POST') {
       const b = await body(req);
-      return json(await setCampaignStatus(env, Number(b.account_id), ad[1], b.status));
+      return json(await setObjectStatus(env, Number(b.account_id), ad[1], b.status));
+    }
+    ad = path.match(/^\/ads\/objects\/(\d+)\/budget$/);
+    if (ad && method === 'POST') {
+      const b = await body(req);
+      return json(await setBudget(env, Number(b.account_id), ad[1], b.amount));
+    }
+    ad = path.match(/^\/ads\/accounts\/(\d+)\/campaigns\/(\d+)$/);
+    if (ad && method === 'GET') {
+      return json(await campaignDetails(env, Number(ad[1]), ad[2], url.searchParams.get('from'), url.searchParams.get('to')));
     }
     if (path === '/ads/boost' && method === 'POST') return json(await boostPost(env, await body(req)), 201);
   } catch (err) {

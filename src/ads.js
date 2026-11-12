@@ -83,27 +83,119 @@ export async function adsOverview(env, clientId, from, to) {
   return out;
 }
 
-export async function setCampaignStatus(env, accountId, campaignId, status) {
-  if (!['ACTIVE', 'PAUSED'].includes(status)) throw new AdsError('حالة غير معروفة');
-  if (!/^\d+$/.test(String(campaignId))) throw new AdsError('حملة غير معروفة');
+// Campaigns, ad sets and ads all carry account_id: make sure the object belongs to
+// this ad account before touching it.
+async function ownedObject(env, accountId, objectId, fields = 'account_id') {
+  if (!/^\d+$/.test(String(objectId))) throw new AdsError('عنصر غير معروف');
   const { acc, token } = await adAccount(env, accountId);
-  // Make sure the campaign belongs to this ad account before touching it.
-  const c = await graph(env, String(campaignId), { params: { fields: 'account_id', access_token: token } }).catch((e) => { throw new AdsError(explain(e)); });
-  if (`act_${c.account_id}` !== acc.external_id) throw new AdsError('الحملة دي مش تبع حساب الإعلانات ده');
-  await graph(env, String(campaignId), { method: 'POST', params: { status, access_token: token } }).catch((e) => { throw new AdsError(explain(e)); });
+  const obj = await graph(env, String(objectId), { params: { fields: `account_id,${fields}`, access_token: token } })
+    .catch((e) => { throw new AdsError(explain(e)); });
+  if (`act_${obj.account_id}` !== acc.external_id) throw new AdsError('ده مش تبع حساب الإعلانات ده');
+  return { acc, token, obj };
+}
+
+const post = (env, path, params, token) => graph(env, path, { method: 'POST', params: { ...params, access_token: token } })
+  .catch((e) => { throw new AdsError(explain(e)); });
+
+// Pause / resume / delete a campaign, ad set or ad.
+export async function setObjectStatus(env, accountId, objectId, status) {
+  if (!['ACTIVE', 'PAUSED', 'DELETED'].includes(status)) throw new AdsError('حالة غير معروفة');
+  const { token } = await ownedObject(env, accountId, objectId);
+  await post(env, String(objectId), { status }, token);
   return { ok: true };
+}
+export const setCampaignStatus = setObjectStatus;
+
+const minorUnits = (amount, currency) => Math.round(Number(amount) * (NO_CENTS.includes(currency) ? 1 : 100));
+
+// Change the budget of a campaign or ad set (whichever holds it), daily or total.
+export async function setBudget(env, accountId, objectId, amount) {
+  const value = Number(amount);
+  if (!(value > 0)) throw new AdsError('اكتب الميزانية');
+  const { acc, token, obj } = await ownedObject(env, accountId, objectId, 'daily_budget,lifetime_budget');
+  const field = Number(obj.lifetime_budget) > 0 && !(Number(obj.daily_budget) > 0) ? 'lifetime_budget' : 'daily_budget';
+  if (!(Number(obj[field]) > 0)) throw new AdsError('الميزانية مش على المستوى ده. افتح تفاصيل الحملة وغيّرها من المجموعة الإعلانية.');
+  const info = await graph(env, acc.external_id, { params: { fields: 'currency', access_token: token } }).catch((e) => { throw new AdsError(explain(e)); });
+  await post(env, String(objectId), { [field]: String(minorUnits(value, info.currency)) }, token);
+  return { ok: true, field };
+}
+
+// Ad sets and ads inside one campaign, with their numbers for the range.
+export async function campaignDetails(env, accountId, campaignId, from, to) {
+  const { token } = await ownedObject(env, accountId, campaignId);
+  const range = JSON.stringify({ since: ymd(Number(from)), until: ymd(Number(to) - 1) });
+  const ins = `insights.time_range(${range}){${INSIGHT_FIELDS}}`;
+  const get = (path, fields) => graph(env, path, { params: { fields, limit: '50', access_token: token } }).catch((e) => { throw new AdsError(explain(e)); });
+  const adsets = await get(`${campaignId}/adsets`, `id,name,status,effective_status,daily_budget,lifetime_budget,start_time,end_time,targeting{age_min,age_max,genders,geo_locations},${ins}`);
+  const ads = await get(`${campaignId}/ads`, `id,name,status,effective_status,adset_id,creative{thumbnail_url,effective_object_story_id},${ins}`);
+  return {
+    adsets: (adsets.data || []).map((a) => ({
+      id: a.id, name: a.name, status: a.status, effective_status: a.effective_status,
+      daily_budget: num(a.daily_budget), lifetime_budget: num(a.lifetime_budget), start_time: a.start_time, end_time: a.end_time,
+      audience: {
+        countries: a.targeting?.geo_locations?.countries || [], age_min: a.targeting?.age_min, age_max: a.targeting?.age_max,
+        genders: a.targeting?.genders || [],
+      },
+      ...shapeInsights(a.insights?.data?.[0]),
+    })),
+    ads: (ads.data || []).map((a) => ({
+      id: a.id, name: a.name, status: a.status, effective_status: a.effective_status, adset_id: a.adset_id,
+      thumbnail: a.creative?.thumbnail_url || null,
+      ...shapeInsights(a.insights?.data?.[0]),
+    })),
+  };
+}
+
+// Recent posts of the client's Facebook pages, straight from Facebook (also ones made outside the platform).
+export async function pagePosts(env, clientId) {
+  const { results: pages } = await env.DB.prepare("SELECT * FROM accounts WHERE client_id = ? AND platform = 'facebook' ORDER BY name").bind(clientId).all();
+  const out = [];
+  for (const page of pages) {
+    try {
+      const token = await decrypt(env.SESSION_SECRET, page.token_enc);
+      const r = await graph(env, `${page.external_id}/published_posts`, {
+        params: { fields: 'id,message,full_picture,created_time,permalink_url', limit: '25', access_token: token },
+      });
+      for (const p of r.data || []) {
+        out.push({ page_account_id: page.id, page_name: page.name, id: p.id, text: p.message || '', image: p.full_picture || null, time: p.created_time, url: p.permalink_url || null });
+      }
+    } catch (err) {
+      out.push({ page_account_id: page.id, page_name: page.name, error: err.message });
+    }
+  }
+  return out;
 }
 
 // Promote an existing Facebook post: campaign -> ad set -> ad, all PAUSED.
-export async function boostPost(env, { account_id, post_target_id, daily_budget, days, countries, age_min, age_max, name }) {
+export async function boostPost(env, {
+  account_id, post_target_id, page_account_id, page_post_id, daily_budget, days, countries, age_min, age_max, genders,
+  objective = 'engagement', start_now = false, name,
+}) {
   const { acc, token } = await adAccount(env, account_id);
-  const t = await env.DB.prepare(
-    `SELECT pt.external_post_id, a.external_id AS page_id, a.client_id, p.message
-     FROM post_targets pt JOIN accounts a ON a.id = pt.account_id JOIN posts p ON p.id = pt.post_id
-     WHERE pt.id = ? AND a.platform = 'facebook' AND pt.status = 'published'`
-  ).bind(post_target_id).first();
+  let t;
+  if (page_post_id) {
+    // A post picked straight from the page (ads page).
+    const page = await env.DB.prepare("SELECT external_id, client_id FROM accounts WHERE id = ? AND platform = 'facebook'").bind(page_account_id).first();
+    if (!page) throw new AdsError('اختار صفحة فيسبوك');
+    if (!new RegExp(`^${page.external_id}_\\d+$`).test(String(page_post_id))) throw new AdsError('المنشور مش تبع الصفحة دي');
+    t = { external_post_id: String(page_post_id), page_id: page.external_id, client_id: page.client_id, message: '' };
+  } else {
+    t = await env.DB.prepare(
+      `SELECT pt.external_post_id, a.external_id AS page_id, a.client_id, p.message
+       FROM post_targets pt JOIN accounts a ON a.id = pt.account_id JOIN posts p ON p.id = pt.post_id
+       WHERE pt.id = ? AND a.platform = 'facebook' AND pt.status = 'published'`
+    ).bind(post_target_id).first();
+  }
   if (!t || !t.external_post_id) throw new AdsError('اختار منشور فيسبوك اتنشر');
   if (t.client_id !== acc.client_id) throw new AdsError('حساب الإعلانات والمنشور لازم يكونوا لنفس العميل');
+  const GOALS = {
+    engagement: { objective: 'OUTCOME_ENGAGEMENT', optimization_goal: 'POST_ENGAGEMENT' },
+    awareness: { objective: 'OUTCOME_AWARENESS', optimization_goal: 'REACH' },
+  };
+  const goal = GOALS[objective];
+  if (!goal) throw new AdsError('هدف غير معروف');
+  const status = start_now === true ? 'ACTIVE' : 'PAUSED';
+  const gender = [1, 2].includes(Number(genders)) ? [Number(genders)] : null;
 
   const budget = Number(daily_budget);
   const nDays = Math.round(Number(days));
@@ -115,7 +207,7 @@ export async function boostPost(env, { account_id, post_target_id, daily_budget,
   const ageMax = Math.min(65, Number(age_max) || 65);
 
   const info = await graph(env, acc.external_id, { params: { fields: 'currency', access_token: token } }).catch((e) => { throw new AdsError(explain(e)); });
-  const minor = Math.round(budget * (NO_CENTS.includes(info.currency) ? 1 : 100));
+  const minor = minorUnits(budget, info.currency);
   const storyId = t.external_post_id.includes('_') ? t.external_post_id : `${t.page_id}_${t.external_post_id}`;
   const label = String(name || '').trim() || `ترويج: ${(t.message || 'منشور').slice(0, 40)}`;
   const start = new Date(Date.now() + 10 * 60 * 1000);
@@ -123,21 +215,21 @@ export async function boostPost(env, { account_id, post_target_id, daily_budget,
   const call = (path, params) => graph(env, path, { method: 'POST', params: { ...params, access_token: token } }).catch((e) => { throw new AdsError(explain(e)); });
 
   const campaign = await call(`${acc.external_id}/campaigns`, {
-    name: label, objective: 'OUTCOME_ENGAGEMENT', status: 'PAUSED',
+    name: label, objective: goal.objective, status,
     special_ad_categories: '[]', is_adset_budget_sharing_enabled: 'false',
   });
   const adset = await call(`${acc.external_id}/adsets`, {
-    name: `${label} - جمهور`, campaign_id: campaign.id, status: 'PAUSED',
-    daily_budget: String(minor), billing_event: 'IMPRESSIONS', optimization_goal: 'POST_ENGAGEMENT',
+    name: `${label} - جمهور`, campaign_id: campaign.id, status,
+    daily_budget: String(minor), billing_event: 'IMPRESSIONS', optimization_goal: goal.optimization_goal,
     bid_strategy: 'LOWEST_COST_WITHOUT_CAP',
     start_time: start.toISOString(), end_time: end.toISOString(),
-    targeting: JSON.stringify({ geo_locations: { countries: geo }, age_min: ageMin, age_max: ageMax }),
+    targeting: JSON.stringify({ geo_locations: { countries: geo }, age_min: ageMin, age_max: ageMax, ...(gender ? { genders: gender } : {}) }),
   });
   const ad = await call(`${acc.external_id}/ads`, {
-    name: label, adset_id: adset.id, status: 'PAUSED',
+    name: label, adset_id: adset.id, status,
     creative: JSON.stringify({ object_story_id: storyId }),
   });
-  return { campaign_id: campaign.id, adset_id: adset.id, ad_id: ad.id, currency: info.currency };
+  return { campaign_id: campaign.id, adset_id: adset.id, ad_id: ad.id, currency: info.currency, status };
 }
 
 // Ads totals for the client report (spend, reach, clicks...).
