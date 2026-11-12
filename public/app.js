@@ -191,14 +191,22 @@ async function router() {
   const { name, params } = currentRoute();
   shell(name);
   updateWaBadge();
-  const main = $('#main');
+  // Each visit renders into its own container. If you leave (or change a filter)
+  // before a slow page finishes, its late result lands in a detached container
+  // and its errors are ignored, instead of breaking the page you're on now.
+  const token = ++routeToken;
+  const main = document.createElement('div');
+  main.className = 'view';
   main.innerHTML = '<div class="boot">جاري التحميل…</div>';
+  $('#main').replaceChildren(main);
   try {
     await routes[name](main, params);
   } catch (err) {
+    if (token !== routeToken || !main.isConnected) return;
     main.innerHTML = `<div class="notice bad">${esc(err.message)}</div>`;
   }
 }
+let routeToken = 0;
 
 window.addEventListener('hashchange', router);
 
@@ -306,19 +314,21 @@ function dialogMedia(p) {
   return `<div style="position:relative"><img src="${esc(m[0].url)}" alt="">${m.length > 1 ? `<span class="media-badge">ألبوم ${m.length}</span>` : ''}</div>`;
 }
 
-function postRow(p, { actions = true } = {}) {
-  const when = p.scheduled_at ? fmtDate(p.scheduled_at) : fmtDate(p.created_at);
+function postRow(p, { actions = true, timeFirst = false } = {}) {
+  const at = p.scheduled_at || p.created_at;
+  const when = timeFirst ? '' : fmtDate(at);
   const targets = p.targets.map((t) => `
     <span>${platformTag(t.platform)} ${esc(t.name)} ${t.status !== 'pending' ? badge(t.status) : ''}</span>
     ${t.error ? `<div class="target-error" style="width:100%">${esc(t.name)}: ${esc(t.error)}</div>` : ''}`).join('');
   const editable = ['draft', 'scheduled', 'failed', 'partial'].includes(p.status);
   return `
     <div class="post" data-id="${p.id}" data-series="${esc(p.series_id || '')}">
+      ${timeFirst ? `<div class="post-time"><b>${esc(fmtTime(at))}</b><span class="muted small">${esc(relTime(at))}</span></div>` : ''}
       ${thumbHtml(p)}
       <div class="body">
         <div class="meta" style="margin:0 0 4px">
           <span class="dot" style="background:${esc(p.client_color)}"></span><b>${esc(p.client_name)}</b>
-          ${badge(p.status)} <span>${esc(when)}</span>
+          ${badge(p.status)} ${when ? `<span>${esc(when)}</span>` : ''}
           ${p.series_id ? '<span class="badge" title="جزء من سلسلة متكررة">🔁 متكرر</span>' : ''}
         </div>
         <div class="text">${esc(p.message) || '<span class="muted">(صورة بدون نص)</span>'}</div>
@@ -369,6 +379,7 @@ function bindPostActions(root, reload) {
 
 // ---------- dashboard ----------
 async function renderDashboard(main) {
+  const $ = (sel) => main.querySelector(sel); // this page's own elements only
   const s = await api('/stats');
   main.innerHTML = `
     <div class="page-head"><h1>لوحة التحكم</h1><a class="btn primary" href="#/compose">+ منشور جديد</a></div>
@@ -405,6 +416,7 @@ function syncNotice(s) {
 }
 
 async function renderClients(main, params) {
+  const $ = (sel) => main.querySelector(sel); // this page's own elements only
   const [clients, accounts, sync] = await Promise.all([loadClients(), api('/accounts'), api('/sync').catch(() => ({}))]);
   let notice = '';
   if (params.get('synced')) {
@@ -636,6 +648,7 @@ function openWhatsAppAuto(accountId, name, isAuto, done) {
 
 // ---------- connect: pick which pages belong to the client ----------
 async function renderConnect(main, params) {
+  const $ = (sel) => main.querySelector(sel); // this page's own elements only
   const token = params.get('token') || '';
   const data = await api(`/connect/${encodeURIComponent(token)}`);
   // Group each Instagram account under its Facebook page.
@@ -732,6 +745,7 @@ function repeatTimes({ freq, interval, start, times, weekdays, endType, count, u
 }
 
 async function renderCompose(main, params) {
+  const $ = (sel) => main.querySelector(sel); // this page's own elements only
   const clients = await loadClients();
   if (!clients.length) {
     main.innerHTML = `<div class="page-head"><h1>منشور جديد</h1></div><div class="card empty">ضيف عميل الأول من <a href="#/clients">العملاء والحسابات</a>.</div>`;
@@ -1288,6 +1302,7 @@ async function enablePush() {
 }
 
 async function renderWhatsApp(main) {
+  const $ = (sel) => main.querySelector(sel); // this page's own elements only
   const [data, push, { limit }] = await Promise.all([api('/whatsapp/queue'), pushStatus().catch(() => 'unsupported'), api('/whatsapp/limit').catch(() => ({ limit: 0 }))]);
   const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
   const standalone = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone;
@@ -1528,6 +1543,7 @@ function reportHtml(r) {
 }
 
 async function renderReports(main, params) {
+  const $ = (sel) => main.querySelector(sel); // this page's own elements only
   const clients = await loadClients();
   if (!clients.length) {
     main.innerHTML = '<div class="page-head"><h1>📊 التقارير</h1></div><div class="card empty">ضيف عميل الأول.</div>';
@@ -1644,6 +1660,7 @@ function adsTotalsHtml(t, cur) {
 }
 
 async function renderAds(main, params) {
+  const $ = (sel) => main.querySelector(sel); // this page's own elements only
   const clients = await loadClients();
   if (!clients.length) {
     main.innerHTML = '<div class="page-head"><h1>📢 الإعلانات</h1></div><div class="card empty">ضيف عميل الأول.</div>';
@@ -1930,6 +1947,7 @@ const atDay = (dateStr, fromMs) => {
 };
 
 async function renderCalendar(main) {
+  const $ = (sel) => main.querySelector(sel); // this page's own elements only
   const today = new Date();
   if (!calMonth) calMonth = new Date(today.getFullYear(), today.getMonth(), 1);
   const year = calMonth.getFullYear();
@@ -2194,33 +2212,140 @@ function openPostDialog(p, reload) {
 }
 
 // ---------- posts ----------
+// ---------- posts list: tabs + filters, grouped by day ----------
+const POST_TABS = [
+  ['upcoming', '🕒 الجاية'],
+  ['attention', '⚠️ محتاجة تدخّل'],
+  ['done', '✅ اتنشرت'],
+  ['drafts', '📝 مسودات'],
+  ['all', 'الكل'],
+];
+const POST_PERIODS = [['', 'أي وقت'], ['today', 'النهارده'], ['tomorrow', 'بكرة'], ['week', 'الأسبوع ده'], ['month', 'الشهر ده'], ['custom', 'من … لحد …']];
+
+function periodRange(key, fromStr, toStr) {
+  const now = new Date();
+  const day0 = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const D = 86400000;
+  if (key === 'today') return [day0, day0 + D];
+  if (key === 'tomorrow') return [day0 + D, day0 + 2 * D];
+  if (key === 'week') return [day0 - 6 * D, day0 + 7 * D];
+  if (key === 'month') return [new Date(now.getFullYear(), now.getMonth(), 1).getTime(), new Date(now.getFullYear(), now.getMonth() + 1, 1).getTime()];
+  if (key === 'custom') {
+    const f = fromStr ? new Date(fromStr + 'T00:00').getTime() : null;
+    const t = toStr ? new Date(toStr + 'T00:00').getTime() + D : null;
+    return [f, t];
+  }
+  return [null, null];
+}
+
+// "بعد ساعتين" / "من 3 أيام"
+function relTime(ms) {
+  const diff = ms - Date.now();
+  const abs = Math.abs(diff);
+  const m = Math.round(abs / 60000);
+  let s;
+  if (m < 1) s = 'دلوقتي';
+  else if (m < 60) s = `${m} دقيقة`;
+  else if (m < 60 * 24) s = `${Math.round(m / 60)} ساعة`;
+  else s = `${Math.round(m / 1440)} يوم`;
+  if (s === 'دلوقتي') return s;
+  return diff > 0 ? `بعد ${s}` : `من ${s}`;
+}
+
+function dayLabel(ms) {
+  const d = new Date(ms);
+  const today = new Date();
+  const t0 = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
+  const d0 = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const diff = Math.round((d0 - t0) / 86400000);
+  const name = d.toLocaleDateString('ar-EG', { weekday: 'long', day: 'numeric', month: 'long' });
+  if (diff === 0) return `النهارده · ${name}`;
+  if (diff === 1) return `بكرة · ${name}`;
+  if (diff === -1) return `امبارح · ${name}`;
+  return name;
+}
+
 async function renderPosts(main, params) {
+  const $ = (sel) => main.querySelector(sel); // this page's own elements only
   const clients = await loadClients();
-  const clientId = params.get('client') || '';
-  const status = params.get('status') || '';
-  const q = new URLSearchParams();
-  if (clientId) q.set('client_id', clientId);
-  if (status) q.set('status', status);
-  const posts = await api(`/posts?${q}`);
+  const get = (k) => params.get(k) || '';
+  const tab = POST_TABS.some(([k]) => k === get('tab')) ? get('tab') : 'upcoming';
+  const clientId = get('client');
+  const platform = get('platform');
+  const period = get('period');
+  const text = get('q');
+  const [from, to] = periodRange(period, get('from'), get('to'));
+
+  const filters = new URLSearchParams();
+  if (clientId) filters.set('client_id', clientId);
+  if (platform) filters.set('platform', platform);
+  if (text) filters.set('q', text);
+  if (from) filters.set('from', from);
+  if (to) filters.set('to', to);
+  const listQ = new URLSearchParams(filters);
+  if (tab !== 'all') listQ.set('tab', tab);
+  const [posts, counts] = await Promise.all([api(`/posts?${listQ}`), api(`/posts/counts?${filters}`)]);
+
+  const platforms = ['facebook', 'instagram', 'whatsapp', 'youtube', 'tiktok', 'linkedin'];
+  const groups = [];
+  for (const p of posts) {
+    const at = postTime(p);
+    const key = new Date(at).toDateString();
+    if (!groups.length || groups.at(-1).key !== key) groups.push({ key, at, items: [] });
+    groups.at(-1).items.push(p);
+  }
+  const anyFilter = clientId || platform || period || text;
 
   main.innerHTML = `
     <div class="page-head"><h1>المنشورات</h1><a class="btn primary" href="#/compose">+ منشور جديد</a></div>
-    <div class="row" style="margin-bottom:16px">
+    <div class="post-tabs" role="tablist">${POST_TABS.map(([k, l]) => `
+      <button class="post-tab ${k === tab ? 'on' : ''} ${k === 'attention' && counts.attention ? 'warn' : ''}" data-tab="${k}" role="tab" aria-selected="${k === tab}">
+        ${l} <span class="count">${fmtNum(counts[k] || 0)}</span></button>`).join('')}</div>
+    <form class="card post-filters" id="pf">
       <div><label for="f-client">العميل</label>
-        <select id="f-client"><option value="">الكل</option>${clients.map((c) => `<option value="${c.id}" ${String(c.id) === clientId ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select></div>
-      <div><label for="f-status">الحالة</label>
-        <select id="f-status"><option value="">الكل</option>${['scheduled', 'published', 'draft', 'partial', 'failed'].map((s) => `<option value="${s}" ${s === status ? 'selected' : ''}>${STATUS[s]}</option>`).join('')}</select></div>
-    </div>
-    <div class="card">${posts.length ? posts.map((p) => postRow(p)).join('') : '<div class="empty">مفيش منشورات</div>'}</div>`;
+        <select id="f-client"><option value="">كل العملاء</option>${clients.map((c) => `<option value="${c.id}" ${String(c.id) === clientId ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select></div>
+      <div><label for="f-platform">المنصة</label>
+        <select id="f-platform"><option value="">كل المنصات</option>${platforms.map((pl) => `<option value="${pl}" ${pl === platform ? 'selected' : ''}>${esc(PLATFORM[pl])}</option>`).join('')}</select></div>
+      <div><label for="f-period">الوقت</label>
+        <select id="f-period">${POST_PERIODS.map(([k, l]) => `<option value="${k}" ${k === period ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
+      <div class="pf-custom" ${period === 'custom' ? '' : 'hidden'}><label for="f-from">من</label><input id="f-from" type="date" value="${esc(get('from'))}"></div>
+      <div class="pf-custom" ${period === 'custom' ? '' : 'hidden'}><label for="f-to">لحد</label><input id="f-to" type="date" value="${esc(get('to'))}"></div>
+      <div class="pf-search"><label for="f-q">بحث في الكلام</label><input id="f-q" type="search" value="${esc(text)}" placeholder="كلمة من المنشور"></div>
+      ${anyFilter ? '<div style="flex:0"><button type="button" class="btn small" id="f-clear">✕ شيل الفلاتر</button></div>' : ''}
+    </form>
+    ${posts.length ? groups.map((g) => `
+      <section class="day-group">
+        <h3 class="day-head">${esc(dayLabel(g.at))} <span class="muted small">(${g.items.length})</span></h3>
+        <div class="card">${g.items.map((p) => postRow(p, { timeFirst: true })).join('')}</div>
+      </section>`).join('')
+      : `<div class="card empty">${{
+        upcoming: 'مفيش منشورات جاية. <a href="#/compose">اعمل منشور جديد</a>',
+        attention: 'كله تمام 👌 مفيش حاجة فشلت ولا مستنية منك حاجة.',
+        done: 'لسه مفيش منشورات اتنشرت في الفترة دي.',
+        drafts: 'مفيش مسودات.',
+        all: 'مفيش منشورات.',
+      }[tab]}</div>`}
+    ${posts.length >= 500 ? '<p class="muted small">بيظهر أول 500 بس. استخدم الفلاتر عشان تضيّق.</p>' : ''}`;
 
-  const apply = () => {
-    const nq = new URLSearchParams();
-    if ($('#f-client').value) nq.set('client', $('#f-client').value);
-    if ($('#f-status').value) nq.set('status', $('#f-status').value);
+  const go = (changes) => {
+    const nq = new URLSearchParams(params);
+    for (const [k, v] of Object.entries(changes)) { if (v) nq.set(k, v); else nq.delete(k); }
     location.hash = '#/posts' + (nq.toString() ? '?' + nq : '');
   };
-  $('#f-client').onchange = apply;
-  $('#f-status').onchange = apply;
+  main.querySelectorAll('[data-tab]').forEach((b) => { b.onclick = () => go({ tab: b.dataset.tab === 'upcoming' ? '' : b.dataset.tab }); });
+  $('#f-client').onchange = () => go({ client: $('#f-client').value });
+  $('#f-platform').onchange = () => go({ platform: $('#f-platform').value });
+  $('#f-period').onchange = () => {
+    const v = $('#f-period').value;
+    if (v === 'custom') { main.querySelectorAll('.pf-custom').forEach((el) => { el.hidden = false; }); return; }
+    go({ period: v, from: '', to: '' });
+  };
+  const applyCustom = () => { if ($('#f-from').value || $('#f-to').value) go({ period: 'custom', from: $('#f-from').value, to: $('#f-to').value }); };
+  $('#f-from').onchange = applyCustom;
+  $('#f-to').onchange = applyCustom;
+  $('#pf').onsubmit = (e) => { e.preventDefault(); go({ q: $('#f-q').value.trim() }); };
+  $('#f-q').addEventListener('search', () => go({ q: $('#f-q').value.trim() }));
+  $('#f-clear')?.addEventListener('click', () => go({ client: '', platform: '', period: '', from: '', to: '', q: '' }));
   bindPostActions(main, () => renderPosts(main, params));
 }
 

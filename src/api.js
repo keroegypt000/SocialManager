@@ -424,16 +424,39 @@ async function route(req, env, url) {
   }
 
   // Posts
-  if (path === '/posts' && method === 'GET') {
+  // Posts list. Tabs: upcoming (soonest first) / done / attention / drafts / all,
+  // plus client, platform, text and date-range filters.
+  if ((path === '/posts' || path === '/posts/counts') && method === 'GET') {
     const where = [];
     const args = [];
     const q = url.searchParams;
     if (q.get('client_id')) { where.push('p.client_id = ?'); args.push(q.get('client_id')); }
-    if (q.get('status')) { where.push('p.status = ?'); args.push(q.get('status')); }
+    if (q.get('platform')) {
+      where.push('EXISTS (SELECT 1 FROM post_targets x JOIN accounts xa ON xa.id = x.account_id WHERE x.post_id = p.id AND xa.platform = ?)');
+      args.push(q.get('platform'));
+    }
+    if (q.get('q')) { where.push('instr(lower(p.message), lower(?)) > 0'); args.push(String(q.get('q')).slice(0, 100)); }
     if (q.get('from')) { where.push('COALESCE(p.scheduled_at, p.created_at) >= ?'); args.push(Number(q.get('from'))); }
     if (q.get('to')) { where.push('COALESCE(p.scheduled_at, p.created_at) < ?'); args.push(Number(q.get('to'))); }
+    const TABS = {
+      upcoming: "p.status IN ('scheduled', 'publishing')",
+      done: "p.status = 'published'",
+      attention: "p.status IN ('failed', 'partial', 'manual')",
+      drafts: "p.status = 'draft'",
+    };
+    const base = where.length ? where.join(' AND ') : '1=1';
+    if (path === '/posts/counts') {
+      const r = await db.prepare(`SELECT
+        ${Object.entries(TABS).map(([k, cond]) => `SUM(CASE WHEN ${cond} THEN 1 ELSE 0 END) AS ${k}`).join(', ')}, COUNT(*) AS all_posts
+        FROM posts p WHERE ${base}`).bind(...args).first();
+      return json(Object.fromEntries(Object.entries(r).map(([k, v]) => [k === 'all_posts' ? 'all' : k, v || 0])));
+    }
+    const tab = q.get('tab');
+    if (TABS[tab]) where.push(TABS[tab]);
+    if (q.get('status')) { where.push('p.status = ?'); args.push(q.get('status')); }
+    const asc = tab === 'upcoming' || q.get('order') === 'asc';
     const sql = `${POST_SELECT} ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
-      ORDER BY COALESCE(p.scheduled_at, p.created_at) DESC LIMIT 500`;
+      ORDER BY COALESCE(p.scheduled_at, p.created_at) ${asc ? 'ASC' : 'DESC'} LIMIT 500`;
     const { results } = await db.prepare(sql).bind(...args).all();
     return json(results.map(parsePost));
   }

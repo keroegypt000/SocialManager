@@ -409,3 +409,18 @@ a.top-post[href]:hover { border-color: var(--primary); }
 .pick-post img, .pick-noimg { width: 56px; height: 56px; object-fit: cover; border-radius: 8px; flex: none; display: grid; place-items: center; background: var(--surface); }
 .check { display: flex; gap: 8px; align-items: center; font-weight: 600; margin: 6px 0; cursor: pointer; }
 .check input { width: auto; }
+
+/* posts page: tabs, filters, day groups */
+.post-tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
+.post-tab { font: inherit; font-weight: 600; border: 1px solid var(--border); background: var(--surface); color: var(--text); border-radius: 99px; padding: 6px 14px; cursor: pointer; }
+.post-tab .count { display: inline-block; min-width: 22px; padding: 0 6px; border-radius: 99px; background: var(--bg); color: var(--muted); font-size: 12px; }
+.post-tab.on { background: var(--primary); border-color: var(--primary); color: #fff; }
+.post-tab.on .count { background: rgba(255,255,255,.25); color: #fff; }
+.post-tab.warn:not(.on) { border-color: var(--warn); color: var(--warn); }
+.post-filters { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; margin-bottom: 16px; }
+.post-filters > div { flex: 1 1 150px; }
+.post-filters .pf-search { flex: 2 1 200px; }
+.day-group { margin-bottom: 16px; }
+.day-head { margin: 0 0 8px; font-size: 15px; }
+.post-time { flex: none; width: 74px; display: flex; flex-direction: column; align-items: center; gap: 2px; text-align: center; }
+.post-time b { font-size: 16px; }
