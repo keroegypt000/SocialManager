@@ -611,7 +611,9 @@ function openWhatsAppAuto(accountId, name, isAuto, done) {
       box.innerHTML = `<div class="notice ok">✅ مربوط${s.phone ? ` بالرقم <b dir="ltr">+${esc(s.phone)}</b>` : ''}${s.name ? ` (${esc(s.name)})` : ''}.<br>
         الحالات اللي هتتجدول على الحساب ده هتتنشر لوحدها في ميعادها.</div>
         <div class="small">👥 جهات الاتصال اللي هتشوف الحالة: <b>${fmtNum(s.contacts)}</b>${s.contacts ? '' : ' <span class="muted">(بتوصل من الموبايل خلال دقايق بعد الربط، سيب واتساب مفتوح على الموبايل شوية)</span>'}<br>
-        <span class="muted">آخر اتصال: ${esc(when(s.last_open))}</span></div>`;
+        ${s.last_status ? `📤 آخر حالة: اتبعتت لـ <b>${fmtNum(s.last_status.audience)}</b> جهة اتصال (${esc(when(s.last_status.at))})<br>` : ''}
+        <span class="muted">آخر اتصال: ${esc(when(s.last_open))}</span><br>
+        <span class="muted small">الحالة بتظهر عند الشخص لو رقمك متسجل عنده <b>و</b> رقمه متسجل عندك، وحسب إعدادات خصوصية الحالة على موبايلك.</span></div>`;
       actions.innerHTML = '<button type="button" class="btn danger" data-unlink>افصل الرقم ورجّعها يدوي</button>';
       actions.querySelector('[data-unlink]').onclick = async () => {
         if (!(await askConfirm('الرقم هيتشال من الأجهزة المرتبطة، والحالات هترجع تيجيلك إشعار وتنشرها بإيدك. تمام؟'))) return;

@@ -10,18 +10,81 @@ import { openVideo, imageBytes } from '../media.js';
 const MAX_VIDEO = 64 * 1024 * 1024;
 const PATHS = { image: '/mms/image', video: '/mms/video' };
 
+// Read [start, end] of a source into one Buffer.
+async function readRange(src, start, end) {
+  const parts = [];
+  const reader = src.open(start, end).getReader();
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    parts.push(Buffer.from(value.buffer, value.byteOffset, value.byteLength));
+  }
+  return Buffer.concat(parts);
+}
+
+// Video length (seconds) and size from the MP4 header boxes (moov > mvhd / tkhd).
+async function mp4Info(src) {
+  const out = {};
+  try {
+    let off = 0;
+    for (let n = 0; n < 40 && off + 8 <= src.size; n++) {
+      const h = await readRange(src, off, Math.min(off + 15, src.size - 1));
+      let size = h.readUInt32BE(0);
+      const type = h.toString('latin1', 4, 8);
+      if (size === 1) size = Number(h.readBigUInt64BE(8));
+      if (size === 0) size = src.size - off;
+      if (size < 8) break;
+      if (type === 'moov') {
+        if (size > 16 * 1024 * 1024) break;
+        const moov = await readRange(src, off, off + size - 1);
+        const mv = moov.indexOf('mvhd');
+        if (mv > 0) {
+          const v = moov[mv + 4];
+          const timescale = v === 1 ? moov.readUInt32BE(mv + 24) : moov.readUInt32BE(mv + 16);
+          const duration = v === 1 ? Number(moov.readBigUInt64BE(mv + 28)) : moov.readUInt32BE(mv + 20);
+          if (timescale) out.seconds = Math.max(1, Math.round(duration / timescale));
+        }
+        // First track with a size is the video track; width/height are 16.16 fixed point at the end of tkhd.
+        let t = moov.indexOf('tkhd');
+        while (t > 0) {
+          const boxStart = t - 4;
+          const boxSize = moov.readUInt32BE(boxStart);
+          const w = moov.readUInt32BE(boxStart + boxSize - 8) >>> 16;
+          const hgt = moov.readUInt32BE(boxStart + boxSize - 4) >>> 16;
+          if (w && hgt) { out.width = w; out.height = hgt; break; }
+          t = moov.indexOf('tkhd', t + 4);
+        }
+        break;
+      }
+      off += size;
+    }
+  } catch { /* unknown layout: send without it */ }
+  return out;
+}
+
+// Image size from the JPEG frame header.
+function jpegInfo(buf) {
+  for (let i = 2; i + 9 < buf.length;) {
+    if (buf[i] !== 0xff) { i++; continue; }
+    const marker = buf[i + 1];
+    if (marker >= 0xc0 && marker <= 0xc3) return { height: buf.readUInt16BE(i + 5), width: buf.readUInt16BE(i + 7) };
+    i += 2 + buf.readUInt16BE(i + 2);
+  }
+  return {};
+}
+
 async function source(env, media) {
   if (media.type === 'video') {
     const v = await openVideo(env, media.url);
-    if (v) return { size: v.size, mimetype: 'video/mp4', open: () => v.stream() };
+    if (v) return { size: v.size, mimetype: 'video/mp4', open: (s, e) => v.stream(s, e) };
     const res = await fetch(media.url);
     if (!res.ok) throw new Error('مش قادر أنزّل الفيديو');
     const buf = new Uint8Array(await res.arrayBuffer());
-    return { size: buf.length, mimetype: 'video/mp4', open: () => new Response(buf).body };
+    return { size: buf.length, mimetype: 'video/mp4', open: (s = 0, e = buf.length - 1) => new Response(buf.subarray(s, e + 1)).body };
   }
   const { buf, type } = await imageBytes(env, media.url);
   const u8 = new Uint8Array(buf);
-  return { size: u8.length, mimetype: type || 'image/jpeg', open: () => new Response(u8).body };
+  return { size: u8.length, mimetype: type || 'image/jpeg', info: jpegInfo(Buffer.from(u8)), open: (s = 0, e = u8.length - 1) => new Response(u8.subarray(s, e + 1)).body };
 }
 
 // One encryption pass; calls onEnc for every encrypted piece (mac included at the end).
@@ -53,6 +116,7 @@ export async function prepareStatusMedia(env, sock, media, caption) {
   const type = media.type === 'video' ? 'video' : 'image';
   const src = await source(env, media);
   if (type === 'video' && src.size > MAX_VIDEO) throw new Error('فيديو الحالة لازم يكون أقل من 64 ميجا');
+  const info = type === 'video' ? await mp4Info(src) : src.info || {};
   const mediaKey = randomBytes(32);
   const keys = await getMediaKeys(mediaKey, type);
 
@@ -96,6 +160,8 @@ export async function prepareStatusMedia(env, sock, media, caption) {
       mimetype: src.mimetype,
       caption: caption || undefined,
       mediaKeyTimestamp: Math.floor(Date.now() / 1000),
+      ...(info.width && info.height ? { width: info.width, height: info.height } : {}),
+      ...(type === 'video' && info.seconds ? { seconds: info.seconds } : {}),
     },
   };
 }

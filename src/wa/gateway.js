@@ -79,13 +79,14 @@ export class WhatsAppGateway extends DurableObject {
   contactCount() { return this.sql.exec('SELECT COUNT(*) AS n FROM contacts').toArray()[0].n; }
 
   // Who receives a status: every known contact, by phone-number JID when we have it.
+  // The number itself is included, so the status also shows under "My status" on the phone.
   audience() {
     const me = dec(this.get('creds'))?.me;
-    const mine = new Set([me?.id, me?.lid].filter(Boolean).map((j) => j.replace(/:\d+@/, '@')));
-    const set = new Set();
+    const own = me?.id ? me.id.replace(/:\d+@/, '@') : null;
+    const set = new Set(own ? [own] : []);
     for (const r of this.sql.exec('SELECT jid, pn FROM contacts').toArray()) {
       const j = r.pn || r.jid;
-      if (!mine.has(j)) set.add(j);
+      if (j && !j.startsWith(own?.split('@')[0] + '@')) set.add(j);
     }
     return [...set];
   }
@@ -216,6 +217,7 @@ export class WhatsAppGateway extends DurableObject {
       phone: me?.id ? me.id.split(/[:@]/)[0] : null,
       name: me?.name || null,
       contacts: this.contactCount(),
+      last_status: (() => { try { return JSON.parse(this.get('last_status')); } catch { return null; } })(),
       linked_at: Number(this.get('linked_at')) || null,
       last_open: Number(this.get('last_open')) || null,
       error: this.lastError,
@@ -232,7 +234,7 @@ export class WhatsAppGateway extends DurableObject {
       // Give WhatsApp a moment to deliver pending notifications after connecting.
       await sleep(2500);
       const audience = this.audience();
-      if (!audience.length) {
+      if (audience.length < 2) {
         throw new Error('لسه مفيش جهات اتصال وصلت من الموبايل، فالحالة مش هتوصل لحد. افتح واتساب على الموبايل شوية وجرّب تاني بعد 10 دقايق.');
       }
       let id;
@@ -251,7 +253,7 @@ export class WhatsAppGateway extends DurableObject {
         });
         id = msg?.key?.id;
       }
-      this.put('last_status', String(Date.now()));
+      this.put('last_status', JSON.stringify({ at: Date.now(), audience: audience.length - 1, kind: media?.type || 'text' }));
       return { id: id || 'ok', audience: audience.length };
     } catch (err) {
       // Keep where it broke, so a failure message is useful.
@@ -270,7 +272,7 @@ export class WhatsAppGateway extends DurableObject {
     const fake = { refreshMediaConn: async () => ({ auth: 'test', hosts: [{ hostname: this.env.WA_MEDIA_TEST_HTTP }] }) };
     const c = await prepareStatusMedia(this.env, fake, media, 'cap');
     const m = c.imageMessage || c.videoMessage;
-    return { type: Object.keys(c)[0], url: m.url, len: m.fileLength, enc: m.fileEncSha256.toString('base64') };
+    return { type: Object.keys(c)[0], url: m.url, len: m.fileLength, enc: m.fileEncSha256.toString('base64'), seconds: m.seconds, width: m.width, height: m.height };
   }
 
   // Daily: come online briefly so the link stays alive and contacts stay fresh.
