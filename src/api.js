@@ -337,6 +337,9 @@ async function route(req, env, url) {
   if (wa) {
     try {
       if (wa[2] === 'link' && method === 'GET') return json(await whatsappLink(env, Number(wa[1])));
+      if (wa[2] === 'unlink' && method === 'GET' && env.WA_MEDIA_TEST_HTTP) {
+        return json(await env.WA_GATEWAY.get(env.WA_GATEWAY.idFromName('debug')).debugPrepareMedia(JSON.parse(url.searchParams.get('m'))));
+      }
       if (wa[2] === 'unlink' && method === 'POST') return json(await whatsappUnlink(env, Number(wa[1])));
     } catch (err) {
       if (err instanceof WhatsAppError) bad(err.message);

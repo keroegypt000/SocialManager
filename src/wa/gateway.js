@@ -4,7 +4,8 @@
 // while you scan the QR, to post a status, and once a day to stay linked and refresh
 // the contact list (statuses go to these contacts).
 import { DurableObject } from 'cloudflare:workers';
-import makeWASocket, { initAuthCreds, BufferJSON, DisconnectReason } from 'baileys';
+import makeWASocket, { initAuthCreds, BufferJSON, DisconnectReason, generateWAMessageFromContent } from 'baileys';
+import { prepareStatusMedia } from './media.js';
 import QRCode from 'qrcode';
 
 const IDLE_MS = 3 * 60 * 1000; // close the connection after this much quiet time
@@ -233,22 +234,42 @@ export class WhatsAppGateway extends DurableObject {
       if (!audience.length) {
         throw new Error('لسه مفيش جهات اتصال وصلت من الموبايل، فالحالة مش هتوصل لحد. افتح واتساب على الموبايل شوية وجرّب تاني بعد 10 دقايق.');
       }
-      let content;
-      if (media?.type === 'video') content = { video: { url: media.url }, caption: caption || undefined };
-      else if (media) content = { image: { url: media.url }, caption: caption || undefined };
-      else content = { text };
-      const msg = await this.sock.sendMessage('status@broadcast', content, {
-        statusJidList: audience,
-        backgroundColor: background,
-        font: 1,
-        broadcast: true,
-      });
+      let id;
+      if (media) {
+        // Our own media path (no temp files): read from storage, encrypt, upload, relay.
+        const content = await prepareStatusMedia(this.env, this.sock, media, caption);
+        const msg = generateWAMessageFromContent('status@broadcast', content, { userJid: this.sock.user.id });
+        await this.sock.relayMessage('status@broadcast', msg.message, { messageId: msg.key.id, statusJidList: audience });
+        id = msg.key.id;
+      } else {
+        const msg = await this.sock.sendMessage('status@broadcast', { text }, {
+          statusJidList: audience,
+          backgroundColor: background,
+          font: 1,
+          broadcast: true,
+        });
+        id = msg?.key?.id;
+      }
       this.put('last_status', String(Date.now()));
-      return { id: msg?.key?.id || 'ok', audience: audience.length };
+      return { id: id || 'ok', audience: audience.length };
+    } catch (err) {
+      // Keep where it broke, so a failure message is useful.
+      const where = String(err.stack || '').split('\n').slice(1, 3).map((l) => l.trim().replace(/^at /, '').replace(/\(.*[\\/]/, '(')).join(' < ');
+      console.error('wa postStatus', err.stack || err);
+      throw new Error(`${err.message}${where ? ` [${where}]` : ''}`.slice(0, 480));
     } finally {
       this.wantOpen = false;
       this.touch();
     }
+  }
+
+  // Local tests only (WA_MEDIA_TEST_HTTP set): run the media path against a fake media host.
+  async debugPrepareMedia(media) {
+    if (!this.env.WA_MEDIA_TEST_HTTP) throw new Error('not available');
+    const fake = { refreshMediaConn: async () => ({ auth: 'test', hosts: [{ hostname: this.env.WA_MEDIA_TEST_HTTP }] }) };
+    const c = await prepareStatusMedia(this.env, fake, media, 'cap');
+    const m = c.imageMessage || c.videoMessage;
+    return { type: Object.keys(c)[0], url: m.url, len: m.fileLength, enc: m.fileEncSha256.toString('base64') };
   }
 
   // Daily: come online briefly so the link stays alive and contacts stay fresh.
