@@ -2,6 +2,7 @@
 import { encrypt, decrypt } from './crypto.js';
 import { makeState, readState } from './auth.js';
 import { getInvite } from './invite.js';
+import { syncAccounts, unignoreKeys } from './sync.js';
 
 const SCOPES = [
   'pages_show_list',
@@ -47,6 +48,8 @@ export async function metaStart(env, url, { invite } = {}) {
   let subject;
   if (invite) {
     subject = `inv-${invite.token}`;
+  } else if (url.searchParams.get('sync')) {
+    subject = 'sync';
   } else {
     const clientId = Number(url.searchParams.get('client_id'));
     if (!clientId) throw new Error('client_id missing');
@@ -70,7 +73,7 @@ export async function metaCallback(env, url, { isAdmin = false } = {}) {
     invite = await getInvite(env, subject.slice(4));
     clientId = invite?.client_id;
   } else if (subject && isAdmin) {
-    clientId = Number(subject);
+    clientId = subject === 'sync' ? 'sync' : Number(subject);
   }
   // Where to send the user back: the dashboard for you, the invite page for a client.
   const back = (q) => Response.redirect(invite ? `${url.origin}/invite/${invite.token}?${q}` : `${url.origin}/#/clients?${q}`, 302);
@@ -88,6 +91,11 @@ export async function metaCallback(env, url, { isAdmin = false } = {}) {
   const long = await graph(env, 'oauth/access_token', {
     params: { ...common, grant_type: 'fb_exchange_token', fb_exchange_token: short.access_token },
   });
+  // "اكتشف كل حساباتي": every page becomes / joins a client on its own.
+  if (clientId === 'sync') {
+    const r = await syncAccounts(env, long.access_token);
+    return back('synced=' + encodeURIComponent(JSON.stringify(r)));
+  }
   const pages = await graph(env, 'me/accounts', {
     params: {
       access_token: long.access_token,
@@ -190,6 +198,8 @@ export async function savePending(env, token, keys) {
     }
   }
   stmts.push(env.DB.prepare('DELETE FROM pending_links WHERE token = ?').bind(token));
+  // Picked by hand: the sync may bring these back again.
+  await unignoreKeys(env, [...wanted]);
   // New tokens/permissions: old cached reports are stale.
   stmts.push(env.DB.prepare('DELETE FROM report_cache'));
   await env.DB.batch(stmts);

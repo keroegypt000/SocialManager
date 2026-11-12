@@ -5,6 +5,7 @@ import { createInvite, revokeInvites } from './invite.js';
 import { buildReport, createReportLink, clientForReportLink } from './reports.js';
 import { adsOverview, setObjectStatus, setBudget, campaignDetails, pagePosts, boostPost, AdsError } from './ads.js';
 import { providersStatus } from './providers.js';
+import { syncFromSaved, syncStatus, ignoreKeys, clearIgnored } from './sync.js';
 import { publishPost, finalizePost } from './publisher.js';
 import { publicKey as pushPublicKey, subscribe as pushSubscribe, notifyAll } from './push.js';
 
@@ -178,7 +179,23 @@ async function route(req, env, url) {
     return json({ ok: true });
   }
   if (m && method === 'DELETE') {
+    const { results: gone } = await db.prepare('SELECT platform, external_id FROM accounts WHERE client_id = ?').bind(m[1]).all();
     await db.prepare('DELETE FROM clients WHERE id = ?').bind(m[1]).run();
+    await ignoreKeys(env, gone.map((a) => `${a.platform}:${a.external_id}`));
+    return json({ ok: true });
+  }
+
+  // One-click sync of every Facebook page / Instagram / ad account.
+  if (path === '/sync' && method === 'GET') return json(await syncStatus(env));
+  if (path === '/sync' && method === 'POST') {
+    try {
+      return json(await syncFromSaved(env));
+    } catch (err) {
+      bad(err.message);
+    }
+  }
+  if (path === '/sync/ignored' && method === 'DELETE') {
+    await clearIgnored(env);
     return json({ ok: true });
   }
 
@@ -372,7 +389,9 @@ async function route(req, env, url) {
     return json({ ok: true });
   }
   if (m && method === 'DELETE') {
+    const acc = await db.prepare('SELECT platform, external_id FROM accounts WHERE id = ?').bind(m[1]).first();
     await db.prepare('DELETE FROM accounts WHERE id = ?').bind(m[1]).run();
+    if (acc) await ignoreKeys(env, [`${acc.platform}:${acc.external_id}`]);
     return json({ ok: true });
   }
 

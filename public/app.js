@@ -389,9 +389,29 @@ async function renderDashboard(main) {
 }
 
 // ---------- clients ----------
+function syncNotice(s) {
+  const parts = [];
+  if (s.new_clients?.length) parts.push(`اتعمل <b>${s.new_clients.length}</b> عميل جديد: ${s.new_clients.map(esc).join('، ')}`);
+  if (s.added) parts.push(`اتضاف <b>${s.added}</b> حساب`);
+  if (s.updated) parts.push(`اتحدّث <b>${s.updated}</b> حساب`);
+  if (s.unassigned) parts.push(`<b>${s.unassigned}</b> حساب إعلانات مش عارفين بتاع مين، حطيناهم في "📦 حسابات مش متوزعة"، انقلهم للعميل الصح من القايمة اللي جنبهم`);
+  if (s.ignored) parts.push(`<span class="muted">اتجاهلنا ${s.ignored} حساب كنت مسحته</span>`);
+  let ads = '';
+  if (s.ads_note?.startsWith('missing:')) ads = '<br>📢 فيسبوك مدّاش صلاحية الإعلانات، فمفيش حسابات إعلانات اتجابت. دوس "اربط فيسبوك تاني"، وفي شاشة فيسبوك دوس <b>تعديل الإعدادات / Edit settings</b> واختار حسابات الإعلانات ووافق على كل الصلاحيات.';
+  else if (s.ads_note?.startsWith('error:')) ads = `<br>📢 حسابات الإعلانات: فيسبوك رد بخطأ: <span dir="ltr">${esc(s.ads_note.slice(6))}</span>`;
+  else if (s.ads_note === 'none') ads = '<br>📢 مالقيناش حسابات إعلانات إنت أدمن عليها.';
+  const head = `✅ لقينا ${s.pages ?? 0} صفحة و ${s.ad_accounts ?? 0} حساب إعلانات.`;
+  return `<div class="notice ok">${head} ${parts.join(' · ')}${ads}</div>`;
+}
+
 async function renderClients(main, params) {
-  const [clients, accounts] = await Promise.all([loadClients(), api('/accounts')]);
+  const [clients, accounts, sync] = await Promise.all([loadClients(), api('/accounts'), api('/sync').catch(() => ({}))]);
   let notice = '';
+  if (params.get('synced')) {
+    let s = {};
+    try { s = JSON.parse(params.get('synced')); } catch { /* ignore */ }
+    notice = syncNotice(s);
+  }
   if (params.get('connected')) notice = `<div class="notice ok">اتربط ${esc(params.get('connected'))} حساب بنجاح.</div>`;
   if (params.get('connected') === '0') notice = `<div class="notice">الربط تم بس مالقيناش صفحات. اتأكد إنك اخترت الصفحات في شاشة فيسبوك، وإنك أدمن عليها.</div>`;
   if (params.get('error')) notice = `<div class="notice bad">${esc(params.get('error'))}</div>`;
@@ -400,18 +420,52 @@ async function renderClients(main, params) {
     <div class="page-head"><h1>العملاء والحسابات</h1></div>
     ${notice}
     ${!me.metaConfigured ? `<div class="notice">علشان تربط فيسبوك وإنستجرام لازم تضيف بيانات تطبيق Meta في Cloudflare. رابط الـ Redirect اللي هتحطه في إعدادات تطبيق Meta هو:<br><code>${esc(me.redirectUri)}</code></div>` : ''}
-    <form class="card" id="new-client" style="margin-bottom:16px">
-      <h2>عميل جديد</h2>
+    ${me.metaConfigured ? `<section class="card sync-card">
+      <div>
+        <h2>🔄 اكتشاف الحسابات تلقائياً</h2>
+        <p class="muted small" style="margin:4px 0 0">ادخل فيسبوك مرة واحدة، والمنصة هتجيب كل الصفحات وحسابات إنستجرام وحسابات الإعلانات اللي إنت أدمن عليها، وتعمل لكل صفحة عميل باسمها، وتحط إنستجرام والإعلانات بتوعها جواه. ولو ضفت صفحة جديدة بعدين، هتتضاف لوحدها مرة كل يوم.</p>
+        ${sync.last_sync ? `<p class="small" style="margin:6px 0 0">آخر تحديث: <b>${esc(new Date(sync.last_sync).toLocaleString('ar-EG'))}</b></p>` : ''}
+      </div>
+      <div class="sync-actions">
+        <a class="btn primary" href="/auth/meta/start?sync=1">${sync.connected ? 'اربط فيسبوك تاني' : 'اكتشف كل حساباتي'}</a>
+        ${sync.connected ? '<button class="btn" id="sync-now">🔄 حدّث دلوقتي</button>' : ''}
+        ${sync.ignored ? `<button class="btn small" id="sync-unignore" title="حسابات مسحتها، والتحديث مش بيرجّعها">رجّع ${sync.ignored} حساب ممسوح</button>` : ''}
+      </div>
+    </section>` : ''}
+    <details class="card" id="new-client-box" style="margin-bottom:16px">
+    <summary><b>➕ عميل جديد بإيدك</b> <span class="muted small">(لو عايز تضيف عميل مش ليه صفحة عندك، أو تبعتله لينك دعوة)</span></summary>
+    <form id="new-client" style="margin-top:12px">
       <div class="row">
         <div><label for="c-name">اسم العميل</label><input id="c-name" required placeholder="مثلاً: مطعم الشيف"></div>
         <div style="max-width:90px;min-width:70px"><label for="c-color">اللون</label><input id="c-color" type="color" value="#4f46e5"></div>
         <div style="flex:0"><button class="btn primary">إضافة</button></div>
       </div>
     </form>
+    </details>
     <div class="grid clients">
       ${clients.length ? clients.map((c) => clientCard(c, accounts.filter((a) => a.client_id === c.id), clients)).join('') : '<div class="card empty">لسه مفيش عملاء</div>'}
     </div>
     <p class="muted small" style="margin-top:16px">ملحوظة: إنستجرام بيظهر هنا بس لو حساب Business أو Creator ومربوط بصفحة فيسبوك.</p>`;
+
+  $('#sync-now')?.addEventListener('click', async (e) => {
+    e.target.disabled = true;
+    e.target.textContent = 'بيحدّث…';
+    try {
+      const s = await api('/sync', { method: 'POST' });
+      main.innerHTML = '';
+      await renderClients(main, new URLSearchParams({ synced: JSON.stringify(s) }));
+    } catch (err) {
+      toast(err.message);
+      e.target.disabled = false;
+      e.target.textContent = '🔄 حدّث دلوقتي';
+    }
+  });
+  $('#sync-unignore')?.addEventListener('click', async () => {
+    if (!(await askConfirm('الحسابات اللي مسحتها قبل كده هترجع مع التحديث الجاي. تمام؟'))) return;
+    await api('/sync/ignored', { method: 'DELETE' });
+    toast('تمام، دوس "حدّث دلوقتي" عشان ترجع');
+    renderClients(main, new URLSearchParams());
+  });
 
   $('#new-client').onsubmit = async (e) => {
     e.preventDefault();

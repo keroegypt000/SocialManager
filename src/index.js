@@ -6,6 +6,7 @@ import { runDuePosts, runProcessing, cleanupVideos } from './publisher.js';
 import { serveVideo } from './media.js';
 import { handleInvite } from './invite.js';
 import { providerStart, providerCallback } from './providers.js';
+import { dailySync } from './sync.js';
 
 function errorPage(message) {
   const safe = String(message).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -72,7 +73,7 @@ export default {
   async scheduled(event, env) {
     requireSecrets(env);
     await ensureSchema(env);
-    const jobs = [['due posts', runDuePosts], ['processing', runProcessing], ['video cleanup', cleanupVideos]];
+    const jobs = [['due posts', runDuePosts], ['processing', runProcessing], ['video cleanup', cleanupVideos], ['daily account sync', dailySync]];
     for (const [name, job] of jobs) {
       try {
         await job(env);
