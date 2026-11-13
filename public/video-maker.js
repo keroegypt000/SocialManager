@@ -150,12 +150,31 @@
     img.src = URL.createObjectURL(file);
   });
 
-  function drawCover(ctx, img, W, H, zoom, alpha, panDir) {
-    const s = Math.max(W / img.width, H / img.height) * zoom;
-    const w = img.width * s, h = img.height * s;
-    const px = (zoom - 1) * W * 0.5 * panDir;
+  // A blurred, darkened copy that fills the frame (made once per photo).
+  function blurredBackground(img, W, H) {
+    const c = document.createElement('canvas');
+    c.width = W; c.height = H;
+    const x = c.getContext('2d');
+    const s = Math.max(W / img.width, H / img.height) * 1.1;
+    x.filter = 'blur(30px) brightness(0.7)';
+    x.drawImage(img, (W - img.width * s) / 2, (H - img.height * s) / 2, img.width * s, img.height * s);
+    return c;
+  }
+
+  // fit 'blur': the whole photo, centered, on its blurred copy. fit 'cover': fills the frame (crops).
+  function drawCover(ctx, img, W, H, zoom, alpha, panDir, fit, bg) {
     ctx.globalAlpha = alpha;
-    ctx.drawImage(img, (W - w) / 2 + px, (H - h) / 2, w, h);
+    if (fit === 'blur') {
+      ctx.drawImage(bg, 0, 0, W, H);
+      const s = Math.min(W / img.width, H / img.height) * zoom;
+      const w = img.width * s, h = img.height * s;
+      ctx.drawImage(img, (W - w) / 2, (H - h) / 2, w, h);
+    } else {
+      const s = Math.max(W / img.width, H / img.height) * zoom;
+      const w = img.width * s, h = img.height * s;
+      const px = (zoom - 1) * W * 0.5 * panDir;
+      ctx.drawImage(img, (W - w) / 2 + px, (H - h) / 2, w, h);
+    }
     ctx.globalAlpha = 1;
   }
 
@@ -193,11 +212,12 @@
     ctx.fillRect(0, 0, W, H);
     const i = Math.min(imgs.length - 1, Math.floor(t / per));
     const local = t - i * per;
-    const z = (k) => (motion === 'zoom' ? 1 + 0.12 * k : 1.0);
-    drawCover(ctx, imgs[i], W, H, z(local / per), 1, i % 2 ? 1 : -1);
+    const amp = opt.fit === 'blur' ? 0.06 : 0.12;
+    const z = (k) => (motion === 'zoom' ? 1 + amp * k : 1.0);
+    drawCover(ctx, imgs[i], W, H, z(local / per), 1, i % 2 ? 1 : -1, opt.fit, opt.bgs?.[i]);
     if (i + 1 < imgs.length && local > per - FADE) {
       const a = (local - (per - FADE)) / FADE;
-      drawCover(ctx, imgs[i + 1], W, H, z(0), a, (i + 1) % 2 ? 1 : -1);
+      drawCover(ctx, imgs[i + 1], W, H, z(0), a, (i + 1) % 2 ? 1 : -1, opt.fit, opt.bgs?.[i + 1]);
     }
     drawCaption(ctx, opt.caption, W, H);
   }
@@ -208,12 +228,12 @@
   }
 
   // Record the whole thing in real time: canvas stream + music stream -> MediaRecorder.
-  async function render({ files, size, per, motion, caption, music, musicFile, volume }, onProgress) {
+  async function render({ files, size, per, motion, caption, music, musicFile, volume, fit = 'blur' }, onProgress) {
     const [W, H] = SIZES[size];
     const imgs = [];
     for (const f of files) imgs.push(await loadImage(f));
     const total = imgs.length * per;
-    const opt = { W, H, per, motion, caption };
+    const opt = { W, H, per, motion, caption, fit, bgs: fit === 'blur' ? imgs.map((im) => blurredBackground(im, W, H)) : null };
 
     const canvas = document.createElement('canvas');
     canvas.width = W; canvas.height = H;
@@ -303,6 +323,9 @@
           <option value="2">2</option><option value="3" selected>3</option><option value="4">4</option><option value="5">5</option></select></div>
         <div><label>الحركة</label><select name="motion"><option value="zoom">🔍 زووم هادي</option><option value="none">من غير حركة</option></select></div>
       </div>
+      <div class="field"><label>الصورة تظهر إزاي</label><select name="fit">
+        <option value="blur">🖼️ الصورة كاملة على خلفية مموهة منها (مفيش قص)</option>
+        <option value="cover">⛶ مالية الشاشة (أطراف الصورة ممكن تتقص)</option></select></div>
       <div class="field"><label>كلام على الفيديو (اختياري)</label><input name="caption" maxlength="120" placeholder="مثلاً: خصم 25% لحد آخر الشهر"></div>
       <label>🎵 الموسيقى <span class="muted small">(متولّدة جوه المنصة، من غير حقوق)</span></label>
       <div class="vm-music">
@@ -356,7 +379,7 @@
       try {
         const out = await render({
           files, size: f.elements.size.value, per: Number(f.elements.per.value), motion: f.elements.motion.value,
-          caption: f.elements.caption.value.trim(), music, musicFile, volume: Number(f.elements.volume.value),
+          caption: f.elements.caption.value.trim(), music, musicFile, volume: Number(f.elements.volume.value), fit: f.elements.fit.value,
         }, setP);
         dlg.close();
         await onDone(out);

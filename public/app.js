@@ -1584,11 +1584,15 @@ function putWithProgress(url, blob, onProgress) {
 // Re-encode an image as JPEG, max 2048px on the long side, inside Instagram's aspect-ratio limits.
 async function toJpeg(file) {
   const bitmap = await createImageBitmap(file).catch(() => { throw new Error('مش قادر أقرا الصورة دي، جرّب صورة JPG أو PNG'); });
-  let { width: w, height: h } = bitmap;
-  const ratio = w / h;
-  if (ratio > 1.91 || ratio < 0.8) {
-    toast('تنبيه: إنستجرام بيقبل نسبة أبعاد بين 4:5 و 1.91:1، الصورة دي ممكن تترفض على إنستجرام');
-  }
+  const iw = bitmap.width;
+  const ih = bitmap.height;
+  const ratio = iw / ih;
+  // Instagram only accepts 4:5 (0.8) to 1.91:1. Out of that range, the photo is placed
+  // whole on a canvas of the nearest allowed ratio with a blurred copy behind it.
+  const target = ratio < 0.8 ? 0.8 : ratio > 1.91 ? 1.91 : ratio;
+  const fitted = target !== ratio;
+  let w = fitted ? (target < ratio ? iw : Math.round(ih * target)) : iw;
+  let h = fitted ? (target < ratio ? Math.round(iw / target) : ih) : ih;
   const scale = Math.min(1, 2048 / Math.max(w, h));
   w = Math.round(w * scale);
   h = Math.round(h * scale);
@@ -1598,7 +1602,17 @@ async function toJpeg(file) {
   const ctx = canvas.getContext('2d');
   ctx.fillStyle = '#fff'; // transparent PNGs get a white background instead of black
   ctx.fillRect(0, 0, w, h);
-  ctx.drawImage(bitmap, 0, 0, w, h);
+  if (fitted) {
+    const cover = Math.max(w / iw, h / ih);
+    ctx.filter = 'blur(28px) brightness(0.75)';
+    ctx.drawImage(bitmap, (w - iw * cover) / 2, (h - ih * cover) / 2, iw * cover, ih * cover);
+    ctx.filter = 'none';
+    const fit = Math.min(w / iw, h / ih);
+    ctx.drawImage(bitmap, (w - iw * fit) / 2, (h - ih * fit) / 2, iw * fit, ih * fit);
+    toast('الصورة اتظبطت لمقاس إنستجرام (اتحطت كاملة على خلفية مموهة) ✅');
+  } else {
+    ctx.drawImage(bitmap, 0, 0, w, h);
+  }
   bitmap.close?.();
   return new Promise((resolve, reject) =>
     canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('فشل تجهيز الصورة'))), 'image/jpeg', 0.9));
