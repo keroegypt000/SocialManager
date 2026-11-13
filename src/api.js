@@ -11,6 +11,7 @@ import { syncFromSaved, syncStatus, ignoreKeys, clearIgnored } from './sync.js';
 import { publishPost, finalizePost } from './publisher.js';
 import { publishInBackground } from './queue.js';
 import { listContent, liveDetails } from './content.js';
+import { removeTarget, removePost, RemoveError } from './remove.js';
 import { publicKey as pushPublicKey, subscribe as pushSubscribe, notifyAll } from './push.js';
 
 export const json = (data, status = 200, headers = {}) =>
@@ -228,6 +229,21 @@ async function route(req, env, url) {
   }
   const cm = path.match(/^\/content\/(\d+)\/live$/);
   if (cm && method === 'GET') return json(await liveDetails(env, Number(cm[1]), scope('p.client_id')));
+
+  // ---------- take published items down from the platforms ----------
+  const rmT = path.match(/^\/targets\/(\d+)\/remove$/);
+  const rmP = path.match(/^\/posts\/(\d+)\/remove$/);
+  if ((rmT || rmP) && method === 'POST') {
+    try {
+      if (rmT) return json(await removeTarget(env, Number(rmT[1])));
+      const results = await removePost(env, Number(rmP[1]));
+      if (!results.length) bad('مفيش حاجة منشورة تتشال');
+      return json({ results, failed: results.filter((r) => !r.ok) });
+    } catch (err) {
+      if (err instanceof RemoveError) bad(err.message);
+      throw err;
+    }
+  }
 
   // ---------- team members (owner only) ----------
   if (path === '/users' && method === 'GET') {

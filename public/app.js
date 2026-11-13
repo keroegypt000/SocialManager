@@ -16,6 +16,7 @@ const STATUS = {
   failed: 'فشل',
   pending: 'منتظر',
   processing: 'إنستجرام بيجهّز الفيديو',
+  removed: 'اتشال من المنصة',
 };
 const PLATFORM = { facebook: 'فيسبوك', instagram: 'إنستجرام', whatsapp: 'حالة واتساب', youtube: 'يوتيوب', tiktok: 'تيك توك', linkedin: 'لينكدإن', meta_ads: 'إعلانات Meta' };
 // Platforms connected with their own login (switched on by keys in Cloudflare).
@@ -400,6 +401,7 @@ function postRow(p, { actions = true, timeFirst = false } = {}) {
         ${editable ? `<a class="btn small" href="#/compose?edit=${p.id}">تعديل</a>` : ''}
         <a class="btn small" href="#/compose?copy=${p.id}" title="انسخ المنشور لميعاد أو مواعيد تانية">نسخ / تكرار</a>
         ${p.targets.some((t) => t.platform === 'facebook' && t.status === 'published') ? '<button class="btn small" data-act="boost" title="اعمل إعلان ممول للمنشور ده">📢 روّج</button>' : ''}
+        ${p.targets.some((t) => t.status === 'published') ? '<button class="btn small danger" data-act="remove-live" title="يشيل المنشور من فيسبوك وإنستجرام وحالة الواتساب">🗑 شيله من المنصات</button>' : ''}
         <button class="btn small danger" data-act="delete">حذف</button>
         ${p.series_id ? '<button class="btn small danger" data-act="delete-series" title="يحذف كل المنشورات الجاية في السلسلة دي">حذف السلسلة الجاية</button>' : ''}
       </div>` : ''}
@@ -413,6 +415,19 @@ function bindPostActions(root, reload) {
       const id = row.dataset.id;
       if (btn.dataset.act === 'boost') {
         openBoostDialog(await api(`/posts/${id}`)).catch((err) => toast(err.message));
+        return;
+      }
+      if (btn.dataset.act === 'remove-live') {
+        if (!(await askConfirm('المنشور ده هيتمسح من فيسبوك وإنستجرام، وحالة الواتساب هتختفي عند الكل. مينفعش ترجّعه. متأكد؟', { ok: '🗑 امسحه' }))) return;
+        btn.disabled = true;
+        btn.textContent = 'بيمسح…';
+        try {
+          const r = await api(`/posts/${id}/remove`, { method: 'POST' });
+          toast(r.failed.length ? `اتمسح من ${r.results.length - r.failed.length}، وفيه ${r.failed.length} مقدرش: ${r.failed[0].error}` : 'اتمسح من المنصات ✅');
+        } catch (err) {
+          toast(err.message);
+        }
+        reload();
         return;
       }
       if (btn.dataset.act === 'delete') {
@@ -666,6 +681,7 @@ async function renderContent(main, params) {
     ['manual', '✋ مستنية نشر يدوي', (t) => t.target_status === 'manual'],
     ['published', '✅ اتنشرت', (t) => t.target_status === 'published'],
     ['upcoming', '🕒 الجاية', (t) => t.target_status === 'pending' && t.post_status === 'scheduled'],
+    ['removed', '🗑 اتشالت من المنصات', (t) => t.target_status === 'removed'],
   ];
   const tileHtml = (t) => {
     const m = t.media || [];
@@ -690,6 +706,7 @@ async function renderContent(main, params) {
           <div class="live-box" hidden></div>
           <div class="wa-actions">
             ${t.target_status === 'published' && t.platform !== 'whatsapp' ? `<button class="btn small" data-live>🔍 اللي على ${esc(PLATFORM[t.platform] || '')}</button>` : ''}
+            ${t.target_status === 'published' && ['facebook', 'instagram', 'whatsapp'].includes(t.platform) ? '<button class="btn small danger" data-remove>🗑 شيله</button>' : ''}
             ${['failed', 'partial'].includes(t.post_status) || t.target_status === 'failed' ? `<button class="btn small primary" data-retry="${t.post_id}">🔁 إعادة المحاولة</button>` : ''}
           </div>
         </div>
@@ -749,6 +766,27 @@ async function renderContent(main, params) {
         toast(publishMsg(r.status));
       } catch (err) { toast(err.message); }
       renderContent(main, params);
+    };
+  });
+  main.querySelectorAll('[data-remove]').forEach((b) => {
+    b.onclick = async () => {
+      const tile = b.closest('.st-tile');
+      const name = PLATFORM[tile.dataset.platform] || '';
+      const msg = tile.dataset.platform === 'whatsapp'
+        ? 'الحالة دي هتختفي من واتساب عند كل اللي شافوها أو لسه هيشوفوها. متأكد؟'
+        : `ده هيتمسح من ${name} خالص ومينفعش يرجع. متأكد؟`;
+      if (!(await askConfirm(msg, { ok: '🗑 امسح' }))) return;
+      b.disabled = true;
+      b.textContent = 'بيمسح…';
+      try {
+        await api(`/targets/${tile.dataset.target}/remove`, { method: 'POST' });
+        toast(`اتمسح من ${name} ✅`);
+        renderContent(main, params);
+      } catch (err) {
+        toast(err.message);
+        b.disabled = false;
+        b.textContent = '🗑 شيله';
+      }
     };
   });
   refreshWhilePublishing(main, items.map((t) => ({ status: t.post_status })), () => renderContent(main, params));
@@ -894,7 +932,7 @@ function openWhatsAppAuto(accountId, name, isAuto, done) {
         <div class="small">👥 جهات الاتصال اللي هتشوف الحالة: <b>${fmtNum(s.contacts)}</b>${s.contacts ? '' : ' <span class="muted">(بتوصل من الموبايل خلال دقايق بعد الربط، سيب واتساب مفتوح على الموبايل شوية)</span>'}<br>
         ${s.last_status ? `📤 آخر حالة: اتبعتت لـ <b>${fmtNum(s.last_status.audience)}</b> جهة اتصال (${esc(when(s.last_status.at))})${
           s.last_status.ack ? (s.last_status.ack.error ? ` · <b style="color:var(--bad)">واتساب رفضها (كود ${esc(s.last_status.ack.error)})</b>` : ' · ✅ واتساب استلمها') : (s.last_status.id ? ' · ⚠️ مفيش تأكيد من واتساب' : '')
-        }<br><span class="muted small" dir="ltr">diag: ${esc(JSON.stringify({ a: s.last_status.audience, pn: s.last_status.with_phone, lid: s.last_status.lids, map: s.last_status.mapped, drop: s.last_status.dropped, k: s.last_status.kind, m: s.last_status.media, ack: s.last_status.ack }))}</span><br>` : ''}
+        }${s.last_status.privacy ? `<br>🔒 خصوصية الحالة من موبايلك: <b>${{ contacts: 'جهات الاتصال', blacklist: `جهات الاتصال ماعدا ${fmtNum(s.last_status.privacy_list)}`, whitelist: `مشاركة مع ${fmtNum(s.last_status.privacy_list)} بس` }[s.last_status.privacy] || esc(s.last_status.privacy)}</b>` : ''}<br><span class="muted small" dir="ltr">diag: ${esc(JSON.stringify({ a: s.last_status.audience, pn: s.last_status.with_phone, lid: s.last_status.lids, map: s.last_status.mapped, drop: s.last_status.dropped, k: s.last_status.kind, m: s.last_status.media, ack: s.last_status.ack }))}</span><br>` : ''}
         <span class="muted">آخر اتصال: ${esc(when(s.last_open))}</span><br>
         <span class="muted small">الحالة بتظهر عند الشخص لو رقمك متسجل عنده <b>و</b> رقمه متسجل عندك، وحسب إعدادات خصوصية الحالة على موبايلك.</span></div>`;
       actions.innerHTML = '<button type="button" class="btn danger" data-unlink>افصل الرقم ورجّعها يدوي</button>';

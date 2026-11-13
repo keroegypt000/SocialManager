@@ -5,7 +5,7 @@
 // the contact list (statuses go to these contacts).
 import './patches.js'; // must run before Baileys encodes anything
 import { DurableObject } from 'cloudflare:workers';
-import makeWASocket, { initAuthCreds, BufferJSON, DisconnectReason, generateWAMessageFromContent } from 'baileys';
+import makeWASocket, { initAuthCreds, BufferJSON, DisconnectReason, generateWAMessageFromContent, S_WHATSAPP_NET, getBinaryNodeChild, getBinaryNodeChildren } from 'baileys';
 import { prepareStatusMedia } from './media.js';
 import QRCode from 'qrcode';
 
@@ -22,6 +22,8 @@ export class WhatsAppGateway extends DurableObject {
     this.sql = ctx.storage.sql;
     this.sql.exec('CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT)');
     this.sql.exec('CREATE TABLE IF NOT EXISTS contacts (jid TEXT PRIMARY KEY, pn TEXT, name TEXT)');
+    // saved = 1: saved in the phone's address book (Baileys gives `name` only for those).
+    try { this.sql.exec('ALTER TABLE contacts ADD COLUMN saved INTEGER NOT NULL DEFAULT 0'); } catch { /* already there */ }
     this.sock = null;
     this.status = 'offline'; // offline | connecting | qr | open | logged_out
     this.qr = null;
@@ -67,10 +69,12 @@ export class WhatsAppGateway extends DurableObject {
         if (!isUser(jid)) continue;
         const pn = c.phoneNumber || (jid.endsWith('@s.whatsapp.net') ? jid : null);
         const name = c.name || c.notify || c.verifiedName || null;
+        const saved = c.name ? 1 : 0;
         this.sql.exec(
-          `INSERT INTO contacts (jid, pn, name) VALUES (?, ?, ?)
-           ON CONFLICT(jid) DO UPDATE SET pn = COALESCE(excluded.pn, contacts.pn), name = COALESCE(excluded.name, contacts.name)`,
-          jid, pn, name
+          `INSERT INTO contacts (jid, pn, name, saved) VALUES (?, ?, ?, ?)
+           ON CONFLICT(jid) DO UPDATE SET pn = COALESCE(excluded.pn, contacts.pn), name = COALESCE(excluded.name, contacts.name),
+             saved = MAX(contacts.saved, excluded.saved)`,
+          jid, pn, name, saved
         );
       }
     });
@@ -83,16 +87,29 @@ export class WhatsAppGateway extends DurableObject {
   // contact, all as phone-number JIDs (@s.whatsapp.net). WhatsApp rejects (400) a status
   // whose recipient list mixes phone numbers and LIDs, so LID-only contacts are mapped
   // to their phone number, and dropped if WhatsApp doesn't know it.
-  async audience() {
-    const me = dec(this.get('creds'))?.me;
-    const norm = (j) => (j ? `${String(j).split('@')[0].split(':')[0]}@s.whatsapp.net` : null);
-    const own = norm(me?.id);
-    const set = new Set(own ? [own] : []);
+  // Your phone's status privacy (Settings > Privacy > Status): the default list is
+  // "contacts" (all), "blacklist" (all except) or "whitelist" (only these).
+  async statusPrivacy() {
+    try {
+      const res = await this.sock.query({ tag: 'iq', attrs: { to: S_WHATSAPP_NET, type: 'get', xmlns: 'status' }, content: [{ tag: 'privacy', attrs: {} }] });
+      const lists = getBinaryNodeChildren(getBinaryNodeChild(res, 'privacy'), 'list');
+      const def = lists.find((l) => l.attrs?.default === 'true') || lists[0];
+      if (!def) return { type: 'contacts', list: [] };
+      const jids = (Array.isArray(def.content) ? def.content : []).map((c) => c?.attrs?.jid).filter(Boolean);
+      return { type: def.attrs.type || 'contacts', list: jids };
+    } catch (err) {
+      return { type: 'contacts', list: [], error: err.message };
+    }
+  }
+
+  // Phone-number JIDs for a list of JIDs (LIDs are looked up; unknown ones dropped).
+  async toPN(jids) {
+    const norm = (j) => `${String(j).split('@')[0].split(':')[0]}@s.whatsapp.net`;
+    const out = new Set();
     const lids = [];
-    for (const r of this.sql.exec('SELECT jid, pn FROM contacts').toArray()) {
-      if (r.pn && r.pn.endsWith('@s.whatsapp.net')) set.add(norm(r.pn));
-      else if (r.jid.endsWith('@s.whatsapp.net')) set.add(norm(r.jid));
-      else if (r.jid.endsWith('@lid')) lids.push(r.jid);
+    for (const j of jids) {
+      if (String(j).endsWith('@lid')) lids.push(j);
+      else if (String(j).includes('@s.whatsapp.net')) out.add(norm(j));
     }
     let mapped = 0;
     if (lids.length) {
@@ -101,18 +118,64 @@ export class WhatsAppGateway extends DurableObject {
         this.ctx.storage.transactionSync(() => {
           for (const p of pairs) {
             if (!p?.pn) continue;
-            const pn = norm(p.pn);
-            set.add(pn);
+            out.add(norm(p.pn));
             mapped++;
-            this.sql.exec('UPDATE contacts SET pn = ? WHERE jid = ?', pn, p.lid);
+            this.sql.exec('UPDATE contacts SET pn = ? WHERE jid = ?', norm(p.pn), p.lid);
           }
         });
       } catch (err) {
         console.error('lid mapping', err.message);
       }
     }
-    const list = [...set].filter((j) => /^\d{6,15}@s\.whatsapp\.net$/.test(j));
-    return { list, lids: lids.length, mapped, dropped: lids.length - mapped };
+    return { list: [...out], lids: lids.length, mapped };
+  }
+
+  // Who receives a status, following the phone's status privacy. The number itself is
+  // always included so the status shows under "My status". Only phone-number JIDs:
+  // WhatsApp rejects (400) a list that mixes phone numbers and LIDs.
+  async audience() {
+    const me = dec(this.get('creds'))?.me;
+    const own = me?.id ? `${me.id.split('@')[0].split(':')[0]}@s.whatsapp.net` : null;
+    const valid = (j) => /^\d{6,15}@s\.whatsapp\.net$/.test(j) && j !== own;
+    const privacy = await this.statusPrivacy();
+    // "My contacts" means contacts saved on the phone; if we don't know which are saved yet, use everyone we know.
+    const savedCount = this.sql.exec('SELECT COUNT(*) AS n FROM contacts WHERE saved = 1').toArray()[0].n;
+    const rows = this.sql.exec(`SELECT jid, pn FROM contacts ${savedCount >= 5 ? 'WHERE saved = 1' : ''}`).toArray();
+    const contacts = await this.toPN(rows.map((r) => r.pn || r.jid));
+    let list;
+    if (privacy.type === 'whitelist') {
+      list = (await this.toPN(privacy.list)).list;
+    } else if (privacy.type === 'blacklist') {
+      const blocked = new Set((await this.toPN(privacy.list)).list);
+      list = contacts.list.filter((j) => !blocked.has(j));
+    } else {
+      list = contacts.list;
+    }
+    list = [...new Set(list.filter(valid))];
+    return {
+      list: own ? [own, ...list] : list,
+      privacy: privacy.type, privacy_list: privacy.list.length, privacy_error: privacy.error || null,
+      lids: contacts.lids, mapped: contacts.mapped, dropped: contacts.lids - contacts.mapped, saved_only: savedCount >= 5,
+    };
+  }
+
+  // Delete (revoke) statuses we posted: they disappear for everyone who received them.
+  async deleteStatus(ids) {
+    if (!this.isLinked()) throw new Error('الرقم مش مربوط');
+    this.wantOpen = true;
+    try {
+      await this.connect();
+      await this.waitOpen();
+      await sleep(1500);
+      const aud = await this.audience();
+      for (const id of ids) {
+        await this.sock.sendMessage('status@broadcast', { delete: { remoteJid: 'status@broadcast', fromMe: true, id } }, { statusJidList: aud.list });
+      }
+      return { ok: true, deleted: ids.length };
+    } finally {
+      this.wantOpen = false;
+      this.touch();
+    }
   }
 
   // ---------- connection ----------
@@ -291,7 +354,7 @@ export class WhatsAppGateway extends DurableObject {
       }
       const ack = acks.get(id) || null;
       const pn = this.sql.exec('SELECT COUNT(*) AS n FROM contacts WHERE pn IS NOT NULL').toArray()[0].n;
-      const diag = { at: Date.now(), audience: audience.length - 1, with_phone: pn, lids: aud.lids, mapped: aud.mapped, dropped: aud.dropped, kind: media?.type || 'text', media: sentInfo, id, ack };
+      const diag = { at: Date.now(), audience: audience.length - 1, with_phone: pn, lids: aud.lids, mapped: aud.mapped, dropped: aud.dropped, privacy: aud.privacy, privacy_list: aud.privacy_list, privacy_error: aud.privacy_error, saved_only: aud.saved_only, kind: media?.type || 'text', media: sentInfo, id, ack };
       this.put('last_status', JSON.stringify(diag));
       if (!ack) throw new Error('واتساب مأكدش استلام الحالة (مفيش رد من السيرفر خلال 15 ثانية). جرّب تاني.');
       if (ack.error) throw new Error(`واتساب رفض الحالة (كود ${ack.error}). ابعت الرقم ده للدعم.`);

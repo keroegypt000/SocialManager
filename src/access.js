@@ -63,7 +63,13 @@ export async function authorize(env, user, req, path, method) {
     if (method === 'POST') needClient((await readBody()).client_id);
     return;
   }
-  if ((m = path.match(/^\/posts\/(\d+)(?:\/(publish|move|duplicate))?$/))) {
+  if ((m = path.match(/^\/targets\/(\d+)\/remove$/))) {
+    need('posts');
+    const t = await db.prepare('SELECT p.client_id FROM post_targets pt JOIN posts p ON p.id = pt.post_id WHERE pt.id = ?').bind(Number(m[1])).first();
+    if (t) needClient(t.client_id);
+    return;
+  }
+  if ((m = path.match(/^\/posts\/(\d+)(?:\/(publish|move|duplicate|remove))?$/))) {
     need('posts');
     await needPost(m[1]);
     if (method === 'PUT') needClient((await readBody()).client_id);
