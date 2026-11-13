@@ -3,6 +3,7 @@ import { encrypt, decrypt } from './crypto.js';
 import { makeState, readState } from './auth.js';
 import { getInvite } from './invite.js';
 import { syncAccounts, unignoreKeys } from './sync.js';
+import { openVideo } from './media.js';
 
 const SCOPES = [
   'pages_show_list',
@@ -254,17 +255,48 @@ async function publishFacebookVideo(env, pageId, token, url, text) {
   return r.id;
 }
 
-// Facebook Reels: start an upload session, let Facebook fetch the file from our URL, then publish.
+// Facebook Reels: start a session, upload the bytes ourselves (streamed from storage),
+// wait until Facebook reports the whole file received, then publish.
+// (Letting Facebook fetch a file_url and publishing right away gave Reels that
+// played a split second: "finish" was called before the download completed.)
+const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
+
+export async function facebookVideoStatus(env, videoId, token) {
+  const r = await graph(env, String(videoId), { params: { fields: 'status,length,permalink_url', access_token: token } });
+  return r;
+}
+
 async function publishFacebookReel(env, pageId, token, url, text) {
   const start = await graph(env, `${pageId}/video_reels`, { method: 'POST', params: { upload_phase: 'start', access_token: token } });
   const base = env.META_RUPLOAD_BASE || 'https://rupload.facebook.com';
-  const res = await fetch(`${base}/video-upload/${version(env)}/${start.video_id}`, {
-    method: 'POST',
-    headers: { Authorization: `OAuth ${token}`, file_url: url },
-  });
+  const target = `${base}/video-upload/${version(env)}/${start.video_id}`;
+  const video = await openVideo(env, url);
+  let res;
+  if (video) {
+    const { readable, writable } = new FixedLengthStream(video.size);
+    const pump = video.stream().pipeTo(writable);
+    res = await fetch(target, {
+      method: 'POST',
+      headers: { Authorization: `OAuth ${token}`, offset: '0', file_size: String(video.size), 'Content-Type': 'application/octet-stream' },
+      body: readable,
+    });
+    await pump.catch(() => {});
+  } else {
+    res = await fetch(target, { method: 'POST', headers: { Authorization: `OAuth ${token}`, file_url: url } });
+  }
   const up = await res.json().catch(() => ({}));
   if (!res.ok || up.error || up.success === false) {
-    throw new Error(up.error?.message || up.debug_info?.message || 'فيسبوك مقدرش ينزل الفيديو');
+    throw new Error(up.error?.message || up.debug_info?.message || 'فيسبوك مقدرش يستلم الفيديو');
+  }
+  // Wait until Facebook has the whole file (up to ~3 minutes).
+  for (let i = 0; i < 60; i++) {
+    const st = (await facebookVideoStatus(env, start.video_id, token).catch(() => null))?.status;
+    const vs = st?.video_status;
+    if (vs === 'upload_failed' || vs === 'error' || vs === 'expired') {
+      throw new Error(`فيسبوك رفض الفيديو (${vs}${st?.processing_phase?.error?.message ? `: ${st.processing_phase.error.message}` : ''})`);
+    }
+    if (st?.uploading_phase?.status === 'complete' || ['upload_complete', 'processing', 'ready'].includes(vs)) break;
+    await sleepMs(3000);
   }
   await graph(env, `${pageId}/video_reels`, {
     method: 'POST',

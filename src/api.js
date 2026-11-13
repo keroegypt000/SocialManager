@@ -10,6 +10,7 @@ import { whatsappLink, whatsappUnlink, WhatsAppError, GATEWAY, getWaLimit, setWa
 import { syncFromSaved, syncStatus, ignoreKeys, clearIgnored } from './sync.js';
 import { publishPost, finalizePost } from './publisher.js';
 import { publishInBackground } from './queue.js';
+import { listContent, liveDetails } from './content.js';
 import { publicKey as pushPublicKey, subscribe as pushSubscribe, notifyAll } from './push.js';
 
 export const json = (data, status = 200, headers = {}) =>
@@ -218,6 +219,15 @@ async function route(req, env, url) {
     await ignoreKeys(env, gone.map((a) => `${a.platform}:${a.external_id}`));
     return json({ ok: true });
   }
+
+  // ---------- 📺 content: everything sent to every platform ----------
+  if (path === '/content' && method === 'GET') {
+    const q = url.searchParams;
+    const allowedPlatforms = user.owner || user.perms.includes('posts') ? null : ['whatsapp'];
+    return json(await listContent(env, { scope: scope('p.client_id'), platform: q.get('platform'), clientId: q.get('client_id'), days: q.get('days'), allowedPlatforms }));
+  }
+  const cm = path.match(/^\/content\/(\d+)\/live$/);
+  if (cm && method === 'GET') return json(await liveDetails(env, Number(cm[1]), scope('p.client_id')));
 
   // ---------- team members (owner only) ----------
   if (path === '/users' && method === 'GET') {

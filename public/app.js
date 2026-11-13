@@ -167,11 +167,17 @@ const routes = {
   reports: renderReports,
   ads: renderAds,
   users: renderUsers,
+  content: renderContent,
 };
 // Which permission each page needs ('owner' = only the account owner).
-const ROUTE_PERM = { compose: 'posts', calendar: 'posts', posts: 'posts', whatsapp: 'whatsapp', reports: 'reports', ads: 'ads', clients: 'owner', connect: 'owner', users: 'owner' };
+const ROUTE_PERM = { content: 'content', compose: 'posts', calendar: 'posts', posts: 'posts', whatsapp: 'whatsapp', reports: 'reports', ads: 'ads', clients: 'owner', connect: 'owner', users: 'owner' };
 const isOwnerUser = () => !me?.user || me.user.owner; // older servers: treat as owner
-const can = (perm) => !perm || isOwnerUser() || (perm !== 'owner' && (me.user.perms || []).includes(perm));
+const can = (perm) => {
+  if (!perm || isOwnerUser()) return true;
+  const mine = me.user.perms || [];
+  if (perm === 'content') return mine.includes('posts') || mine.includes('whatsapp');
+  return perm !== 'owner' && mine.includes(perm);
+};
 
 let me = null;
 
@@ -242,6 +248,7 @@ function shell(active) {
             <a href="#/compose" data-r="compose">✍️ منشور جديد</a>
             <a href="#/calendar" data-r="calendar">🗓️ التقويم</a>
             <a href="#/posts" data-r="posts">📋 المنشورات</a>
+            <a href="#/content" data-r="content">📺 المحتوى</a>
             <a href="#/reports" data-r="reports">📊 التقارير</a>
             <a href="#/ads" data-r="ads">📢 الإعلانات</a>
             <a href="#/whatsapp" data-r="whatsapp">📱 حالات واتساب <span class="nav-badge" id="wa-badge" hidden></span></a>
@@ -638,6 +645,113 @@ function clientCard(c, accounts, clients) {
         <a class="btn small" href="#/compose?client=${c.id}">منشور جديد</a>
       </div>
     </div>`;
+}
+
+// ---------- 📺 content: what went to every platform, as tiles ----------
+async function renderContent(main, params) {
+  const $ = (sel) => main.querySelector(sel);
+  const clients = await loadClients();
+  const platform = params.get('platform') || '';
+  const clientId = params.get('client') || '';
+  const days = params.get('days') || '14';
+  const q = new URLSearchParams({ days });
+  if (platform) q.set('platform', platform);
+  if (clientId) q.set('client_id', clientId);
+  const items = await api(`/content?${q}`);
+
+  const PLAT = ['facebook', 'instagram', 'whatsapp', 'youtube', 'tiktok', 'linkedin'];
+  const groups = [
+    ['failed', '❌ فشلت', (t) => t.target_status === 'failed'],
+    ['working', '⏳ جاري النشر / بيتجهز', (t) => ['processing', 'pending'].includes(t.target_status) && t.post_status === 'publishing'],
+    ['manual', '✋ مستنية نشر يدوي', (t) => t.target_status === 'manual'],
+    ['published', '✅ اتنشرت', (t) => t.target_status === 'published'],
+    ['upcoming', '🕒 الجاية', (t) => t.target_status === 'pending' && t.post_status === 'scheduled'],
+  ];
+  const tileHtml = (t) => {
+    const m = t.media || [];
+    const first = m[0];
+    const when = t.scheduled_at || t.created_at;
+    const body = first && !t.media_cleaned
+      ? first.type === 'video'
+        ? `<video src="${esc(first.url)}" preload="metadata" muted playsinline controls></video>`
+        : `<img src="${esc(first.url)}" alt="" loading="lazy">${m.length > 1 ? `<span class="st-more">+${m.length - 1}</span>` : ''}`
+      : first ? '<div class="st-text">🎬 الميديا اتمسحت من التخزين</div>'
+        : `<div class="st-text">${esc((t.message || '').slice(0, 160))}</div>`;
+    return `
+      <div class="st-tile ${t.target_status === 'failed' ? 'failed' : ''}" data-target="${t.target_id}" data-platform="${esc(t.platform)}">
+        <div class="st-media">${body}<span class="st-badge">${esc(PLATFORM[t.platform] || t.platform)}${t.fb_reel && t.platform === 'facebook' && first?.type === 'video' ? ' · Reel' : ''}</span></div>
+        <div class="st-info">
+          <div class="st-who"><span class="dot" style="background:${esc(t.client_color)}"></span><b>${esc(t.client_name)}</b> ${badge(t.target_status)}</div>
+          <div class="muted small">${platformTag(t.platform)} ${esc(t.account_name)}</div>
+          <div class="small">${esc(fmtDate(when))} · <span class="muted">${esc(relTime(when))}</span></div>
+          ${first && t.message ? `<div class="st-cap muted small">${esc(t.message.slice(0, 90))}</div>` : ''}
+          ${first?.type === 'video' && first.duration ? `<div class="muted small">🎬 المدة الأصلية: ${Math.round(first.duration)} ثانية${first.width ? ` · ${first.width}×${first.height}` : ''}</div>` : ''}
+          ${t.error ? `<div class="target-error">${esc(t.error)}</div>` : ''}
+          <div class="live-box" hidden></div>
+          <div class="wa-actions">
+            ${t.target_status === 'published' && t.platform !== 'whatsapp' ? `<button class="btn small" data-live>🔍 اللي على ${esc(PLATFORM[t.platform] || '')}</button>` : ''}
+            ${['failed', 'partial'].includes(t.post_status) || t.target_status === 'failed' ? `<button class="btn small primary" data-retry="${t.post_id}">🔁 إعادة المحاولة</button>` : ''}
+          </div>
+        </div>
+      </div>`;
+  };
+
+  main.innerHTML = `
+    <div class="page-head"><h1>📺 المحتوى</h1>${can('posts') ? '<a class="btn primary" href="#/compose">+ منشور جديد</a>' : ''}</div>
+    <p class="muted small" style="margin-top:-6px">كل اللي اتبعت لكل منصة، منشور منشور. دوس <b>🔍</b> على أي حاجة اتنشرت عشان تشوف المنصة نفسها شايفاها إزاي (اللينك، الحالة، ومدة الفيديو عندهم).</p>
+    <div class="post-tabs">${['', ...PLAT].map((p) => `<button class="post-tab ${p === platform ? 'on' : ''}" data-plat="${p}">${p ? esc(PLATFORM[p]) : 'كل المنصات'}
+      <span class="count">${fmtNum(p ? items.filter((x) => x.platform === p).length : items.length)}</span></button>`).join('')}</div>
+    <div class="row" style="margin-bottom:12px">
+      <div><label for="c-client">العميل</label><select id="c-client"><option value="">كل العملاء</option>${clients.map((c) => `<option value="${c.id}" ${String(c.id) === clientId ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select></div>
+      <div><label for="c-days">الفترة</label><select id="c-days">${[['7', 'آخر أسبوع'], ['14', 'آخر أسبوعين'], ['30', 'آخر شهر'], ['60', 'آخر شهرين']].map(([v, l]) => `<option value="${v}" ${v === days ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
+    </div>
+    ${items.length ? groups.map(([key, title, test]) => {
+      const list = items.filter(test);
+      if (!list.length) return '';
+      return `<section class="wa-sec"><h2>${title} <span class="count-pill ${key === 'failed' ? 'bad' : ''}">${list.length}</span></h2>
+        <div class="st-grid">${list.map(tileHtml).join('')}</div></section>`;
+    }).join('') : '<div class="card empty">مفيش محتوى في الفترة دي.</div>'}`;
+
+  const go = (changes) => {
+    const nq = new URLSearchParams(params);
+    for (const [k, v] of Object.entries(changes)) { if (v) nq.set(k, v); else nq.delete(k); }
+    location.hash = '#/content' + (nq.toString() ? '?' + nq : '');
+  };
+  main.querySelectorAll('[data-plat]').forEach((b) => { b.onclick = () => go({ platform: b.dataset.plat }); });
+  $('#c-client').onchange = (e) => go({ client: e.target.value });
+  $('#c-days').onchange = (e) => go({ days: e.target.value === '14' ? '' : e.target.value });
+  main.querySelectorAll('[data-live]').forEach((b) => {
+    b.onclick = async () => {
+      const tile = b.closest('.st-tile');
+      const box = tile.querySelector('.live-box');
+      b.disabled = true;
+      b.textContent = 'بيسأل المنصة…';
+      try {
+        const d = await api(`/content/${tile.dataset.target}/live`);
+        box.innerHTML = `
+          ${(d.warnings || []).map((w) => `<div class="target-error">⚠️ ${esc(w)}</div>`).join('')}
+          ${(d.facts || []).map((f) => `<div class="small">• ${esc(f)}</div>`).join('')}
+          ${d.url ? `<a class="btn small" href="${esc(d.url)}" target="_blank" rel="noopener">افتحه على ${esc(PLATFORM[d.platform] || '')} ↗</a>` : ''}`;
+        box.hidden = false;
+        b.remove();
+      } catch (err) {
+        toast(err.message);
+        b.disabled = false;
+        b.textContent = '🔍 جرّب تاني';
+      }
+    };
+  });
+  main.querySelectorAll('[data-retry]').forEach((b) => {
+    b.onclick = async () => {
+      b.disabled = true;
+      try {
+        const r = await api(`/posts/${b.dataset.retry}/publish`, { method: 'POST' });
+        toast(publishMsg(r.status));
+      } catch (err) { toast(err.message); }
+      renderContent(main, params);
+    };
+  });
+  refreshWhilePublishing(main, items.map((t) => ({ status: t.post_status })), () => renderContent(main, params));
 }
 
 // ---------- team members (owner only) ----------

@@ -48,6 +48,12 @@ export async function authorize(env, user, req, path, method) {
   if (/^\/whatsapp\/accounts\//.test(path)) deny();
   if (path === '/whatsapp/limit' && method !== 'GET') deny();
 
+  // 📺 Content page: anyone who posts or handles WhatsApp statuses (lists are filtered by client).
+  if (path === '/content' || /^\/content\/\d+\/live$/.test(path)) {
+    if (!user.perms.includes('posts') && !user.perms.includes('whatsapp')) deny(PERM_MSG.posts);
+    return;
+  }
+
   // Uploading images/videos is part of posting.
   if (path === '/media' || path.startsWith('/media/')) return need('posts');
 
