@@ -159,7 +159,10 @@ export async function serveVideo(env, ctx, req, id) {
   if (status === 206) headers['Content-Range'] = `bytes ${start}-${end}/${meta.size}`;
   if (req.method === 'HEAD') return new Response(null, { status, headers });
 
-  const { readable, writable } = new TransformStream();
+  // FixedLengthStream keeps the exact Content-Length on the response. With a plain
+  // TransformStream the runtime drops it and answers chunked, and Facebook's video
+  // fetcher then stores a broken video (plays a split second and closes).
+  const { readable, writable } = new FixedLengthStream(end - start + 1);
   const pump = (async () => {
     try {
       for (let i = Math.floor(start / CHUNK); i <= Math.floor(end / CHUNK); i++) {
