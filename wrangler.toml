@@ -42,6 +42,15 @@ class_name = "WhatsAppGateway"
 tag = "wa-gateway-v1"
 new_sqlite_classes = ["WhatsAppGateway"]
 
+# "Publish now" runs in the background: one Durable Object job per post.
+[[durable_objects.bindings]]
+name = "PUBLISH_JOB"
+class_name = "PublishJob"
+
+[[migrations]]
+tag = "publish-job-v1"
+new_sqlite_classes = ["PublishJob"]
+
 # Baileys runs in Workers with these stand-ins (see src/wa/).
 [alias]
 "ws" = "./src/wa/ws.js"

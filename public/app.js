@@ -60,7 +60,7 @@ function askConfirm(message, { ok = 'تمام', cancel = 'إلغاء' } = {}) {
     dlg.className = 'dialog confirm-dialog';
     dlg.innerHTML = `<form method="dialog" class="dlg-body">
       <div style="font-weight:600;line-height:1.8;white-space:pre-line">${esc(message)}</div>
-      <div class="dlg-actions" style="border:0;padding:0">
+      <div class="dlg-actions">
         <button class="btn primary" value="ok">${esc(ok)}</button>
         <button class="btn" value="cancel">${esc(cancel)}</button>
       </div></form>`;
@@ -82,7 +82,7 @@ ${inv.url}`;
     <div class="dlg-head"><b>🔗 لينك دعوة: ${esc(clientName)}</b><button class="btn small dlg-close" value="close">✕</button></div>
     <p style="margin:0">ابعت اللينك ده للعميل. هيفتحه من موبايله، يدخل فيسبوك <b>بحسابه هو</b>، ويختار صفحاته، وهتلاقيها اتربطت عنده هنا.</p>
     <input readonly dir="ltr" value="${esc(inv.url)}" onclick="this.select()">
-    <div class="dlg-actions" style="border:0;padding:0">
+    <div class="dlg-actions">
       <button type="button" class="btn primary small" data-copy-link>📋 انسخ اللينك</button>
       <a class="btn small" style="background:#25d366;border-color:#25d366;color:#fff" target="_blank" rel="noopener" href="https://wa.me/?text=${encodeURIComponent(msg)}">ابعته واتساب</a>
       <button type="button" class="btn small" data-copy-msg>📋 انسخ الرسالة كاملة</button>
@@ -114,7 +114,7 @@ function askText(message, placeholder = '', value = '') {
     dlg.innerHTML = `<form method="dialog" class="dlg-body">
       <label style="font-weight:600;line-height:1.8">${esc(message)}</label>
       <input name="v" placeholder="${esc(placeholder)}" value="${esc(value)}" autofocus>
-      <div class="dlg-actions" style="border:0;padding:0">
+      <div class="dlg-actions">
         <button class="btn primary" value="ok">تمام</button>
         <button class="btn" value="cancel" formnovalidate>إلغاء</button>
       </div></form>`;
@@ -215,6 +215,15 @@ async function router() {
 let routeToken = 0;
 
 window.addEventListener('hashchange', router);
+
+// Tap outside any popup (on the dark background) to close it.
+document.addEventListener('click', (e) => {
+  const d = e.target;
+  if (!(d instanceof HTMLDialogElement) || !d.open) return;
+  const r = d.getBoundingClientRect();
+  const inside = e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom;
+  if (!inside) d.close();
+});
 
 function shell(active) {
   if (!$('#main')) {
@@ -323,9 +332,20 @@ async function loadClients() {
 // Message after "publish now".
 const publishMsg = (status) => ({
   published: 'اتنشر بنجاح ✅',
-  publishing: 'اتبعت ✅ إنستجرام بيجهّز الفيديو، وهينزل لوحده خلال دقايق',
+  publishing: 'تمام ✅ المنشور بيتنشر في الخلفية، تقدر تكمّل شغلك. الحالة هتتحدث لوحدها',
   manual: 'اتنشر ✅ وحالة الواتساب جاهزة: افتح "حالات واتساب" من الموبايل وانشرها بلمسة',
 }[status] || 'فيه حسابات ماتنشرش عليها، شوف السبب تحت المنشور');
+
+// While something is publishing in the background, refresh the page every few
+// seconds so its status updates on its own (skipped while a popup is open).
+function refreshWhilePublishing(main, posts, rerender) {
+  if (!posts.some((p) => p.status === 'publishing')) return;
+  setTimeout(function tick() {
+    if (!main.isConnected) return;
+    if (document.querySelector('dialog[open]')) { setTimeout(tick, 5000); return; }
+    rerender();
+  }, 7000);
+}
 
 // Small media helpers shared by the posts list, calendar and popup.
 const mediaIcon = (p) => {
@@ -431,6 +451,7 @@ async function renderDashboard(main) {
     </div>
     ${s.clients === 0 ? `<div class="notice ok" style="margin-top:16px">ابدأ بإضافة أول عميل من <a href="#/clients">العملاء والحسابات</a>، وبعدين اربط صفحاته.</div>` : ''}`;
   bindPostActions(main, router);
+  refreshWhilePublishing(main, s.upcoming || [], () => renderDashboard(main));
 }
 
 // ---------- clients ----------
@@ -695,7 +716,7 @@ function openUserDialog(user, clients, done) {
       <label class="check"><input type="checkbox" name="perm" value="${k}" ${(user ? user.perms.includes(k) : k === 'posts') ? 'checked' : ''}>
         <span><b>${l}</b><br><span class="muted small">${hint}</span></span></label>`).join('')}</div>
     <div id="u-err" class="notice bad" hidden></div>
-    <div class="dlg-actions" style="border:0;padding:0"><button type="button" class="btn primary" data-save>${user ? 'حفظ' : 'ضيف'}</button></div>
+    <div class="dlg-actions"><button type="button" class="btn primary" data-save>${user ? 'حفظ' : 'ضيف'}</button></div>
   </form>`;
   document.body.appendChild(dlg);
   dlg.addEventListener('close', () => dlg.remove());
@@ -740,7 +761,7 @@ function openWhatsAppAuto(accountId, name, isAuto, done) {
     <div id="wa-state"><div class="muted small">بيتصل بواتساب…</div></div>
     <div class="notice small" style="margin:0">⚠️ الربط ده زي WhatsApp Web بالظبط، ومش رسمي من واتساب. استخدمه بهدوء (حط حد يومي من صفحة 📱 حالات واتساب). الحالة بتوصل لجهات الاتصال اللي على الرقم.</div>
     <div id="wa-err" class="notice bad" hidden></div>
-    <div class="dlg-actions" style="border:0;padding:0" id="wa-actions"></div>
+    <div class="dlg-actions" id="wa-actions"></div>
   </form>`;
   document.body.appendChild(dlg);
   let timer = null;
@@ -1829,7 +1850,7 @@ async function renderReports(main, params) {
       <div class="dlg-head"><b>🔗 لينك التقرير: ${esc(c.name)}</b><button class="btn small dlg-close" value="close">✕</button></div>
       <p style="margin:0">العميل يقدر يفتح التقرير ده في أي وقت ويشوف الأرقام محدّثة، من غير ما يدخل المنصة. <b>للقراية بس</b>، ومش هيقدر يغيّر حاجة.</p>
       <input readonly dir="ltr" value="${esc(link.url)}" onclick="this.select()">
-      <div class="dlg-actions" style="border:0;padding:0">
+      <div class="dlg-actions">
         <button type="button" class="btn primary small" data-c>📋 انسخ اللينك</button>
         <a class="btn small" style="background:#25d366;border-color:#25d366;color:#fff" target="_blank" rel="noopener" href="https://wa.me/?text=${encodeURIComponent(msg)}">ابعته واتساب</a>
       </div>
@@ -2109,7 +2130,7 @@ async function openNewCampaignDialog(clientId, adAcc, done) {
     <div class="field"><label>اسم الحملة (اختياري)</label><input name="name" placeholder="مثلاً عرض الصيف"></div>
     ${adFormFields()}
     <div id="b-err" class="notice bad" hidden></div>
-    <div class="dlg-actions" style="border:0;padding:0"><button type="button" class="btn primary" data-go disabled>اعمل الحملة</button></div>
+    <div class="dlg-actions"><button type="button" class="btn primary" data-go disabled>اعمل الحملة</button></div>
   </form>`;
   document.body.appendChild(dlg);
   dlg.addEventListener('close', () => dlg.remove());
@@ -2158,7 +2179,7 @@ async function openBoostDialog(post) {
     <div class="field"><label>حساب الإعلانات</label><select name="acc">${adAccounts.map((a) => `<option value="${a.id}">${esc(a.name)}</option>`).join('')}</select></div>
     ${adFormFields()}
     <div id="b-err" class="notice bad" hidden></div>
-    <div class="dlg-actions" style="border:0;padding:0"><button type="button" class="btn primary" data-go>اعمل الإعلان</button></div>`}
+    <div class="dlg-actions"><button type="button" class="btn primary" data-go>اعمل الإعلان</button></div>`}
   </form>`;
   document.body.appendChild(dlg);
   dlg.addEventListener('close', () => dlg.remove());
@@ -2256,6 +2277,7 @@ async function renderCalendar(main) {
     <dialog id="post-dialog" class="dialog"></dialog>`;
 
   const reload = () => renderCalendar(main);
+  refreshWhilePublishing(main, posts, reload);
   main.querySelectorAll('[data-ag]').forEach((b) => { b.onclick = () => openPostDialog(byId.get(b.dataset.ag), reload); });
   $('#prev').onclick = () => { calMonth = new Date(year, month - 1, 1); reload(); };
   $('#next').onclick = () => { calMonth = new Date(year, month + 1, 1); reload(); };
@@ -2604,6 +2626,7 @@ async function renderPosts(main, params) {
   $('#f-q').addEventListener('search', () => go({ q: $('#f-q').value.trim() }));
   $('#f-clear')?.addEventListener('click', () => go({ client: '', platform: '', period: '', from: '', to: '', q: '' }));
   bindPostActions(main, () => renderPosts(main, params));
+  refreshWhilePublishing(main, posts, () => renderPosts(main, params));
 }
 
 router();

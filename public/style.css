@@ -501,3 +501,14 @@ a.top-post[href]:hover { border-color: var(--primary); }
   .topbar { padding-top: max(8px, env(safe-area-inset-top)); }
   .sidebar { padding-top: max(20px, env(safe-area-inset-top)); padding-bottom: max(20px, env(safe-area-inset-bottom)); }
 }
+
+/* Popups: header with ✕ pinned on top, actions pinned at the bottom, long text scrolls inside */
+.dlg-body { max-height: min(88vh, 900px); overscroll-behavior: contain; }
+.dlg-head { position: sticky; top: -18px; z-index: 3; background: var(--surface); margin: -18px -18px 0; padding: 14px 18px 10px; border-bottom: 1px solid var(--border); }
+.dlg-actions { position: sticky; bottom: -18px; z-index: 3; background: var(--surface); margin: 0 -18px -18px; padding: 12px 18px 14px; }
+.dlg-close { font-size: 16px; min-width: 36px; min-height: 32px; justify-content: center; }
+.dlg-text { max-height: 34vh; overflow-y: auto; padding-inline-end: 4px; }
+@media (max-width: 600px) {
+  .dialog { width: calc(100vw - 16px); max-width: none; margin: auto; }
+  .dlg-body { max-height: 92vh; }
+}

@@ -90,6 +90,8 @@ const MIGRATIONS = [
   'ALTER TABLE posts ADD COLUMN media_cleaned INTEGER NOT NULL DEFAULT 0',
   // When an Instagram video started processing (status 'processing').
   'ALTER TABLE post_targets ADD COLUMN started_at INTEGER',
+  // When "publish now" handed the post to its background job.
+  'ALTER TABLE posts ADD COLUMN publish_started_at INTEGER',
 ];
 
 let ready = false;

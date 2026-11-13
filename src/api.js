@@ -9,6 +9,7 @@ import { providersStatus } from './providers.js';
 import { whatsappLink, whatsappUnlink, WhatsAppError, GATEWAY, getWaLimit, setWaLimit, checkWaLimit, getWaSettings, setWaMediaOnly } from './whatsapp.js';
 import { syncFromSaved, syncStatus, ignoreKeys, clearIgnored } from './sync.js';
 import { publishPost, finalizePost } from './publisher.js';
+import { publishInBackground } from './queue.js';
 import { publicKey as pushPublicKey, subscribe as pushSubscribe, notifyAll } from './push.js';
 
 export const json = (data, status = 200, headers = {}) =>
@@ -585,7 +586,11 @@ async function route(req, env, url) {
       db.prepare('INSERT INTO post_targets (post_id, account_id) VALUES (?, ?)').bind(pid, aid)));
     for (let i = 0; i < targetStmts.length; i += 90) await db.batch(targetStmts.slice(i, i + 90));
 
-    if (input.mode === 'now') await publishPost(env, ids[0]);
+    // "Publish now": answer right away, the post publishes in the background.
+    if (input.mode === 'now') {
+      await db.prepare('UPDATE posts SET publish_started_at = ? WHERE id = ?').bind(Date.now(), ids[0]).run();
+      await publishInBackground(env, ids[0]);
+    }
     const saved = await db.prepare(`${POST_SELECT} WHERE p.id = ?`).bind(ids[0]).first();
     return json({ ...parsePost(saved), created: ids.length }, 201);
   }
@@ -596,7 +601,8 @@ async function route(req, env, url) {
       "UPDATE posts SET status = 'publishing' WHERE id = ? AND status IN ('draft', 'scheduled', 'failed', 'partial')"
     ).bind(m[1]).run();
     if (!claim.meta.changes) bad('المنشور بيتنشر دلوقتي أو اتنشر خلاص');
-    await publishPost(env, Number(m[1]));
+    await db.prepare('UPDATE posts SET publish_started_at = ? WHERE id = ?').bind(Date.now(), m[1]).run();
+    await publishInBackground(env, Number(m[1]));
     const saved = await db.prepare(`${POST_SELECT} WHERE p.id = ?`).bind(m[1]).first();
     return json(parsePost(saved));
   }
@@ -669,7 +675,10 @@ async function route(req, env, url) {
       db.prepare('DELETE FROM post_targets WHERE post_id = ?').bind(m[1]),
       ...input.accountIds.map((aid) => db.prepare('INSERT INTO post_targets (post_id, account_id) VALUES (?, ?)').bind(m[1], aid)),
     ]);
-    if (input.mode === 'now') await publishPost(env, Number(m[1]));
+    if (input.mode === 'now') {
+      await db.prepare('UPDATE posts SET publish_started_at = ? WHERE id = ?').bind(Date.now(), m[1]).run();
+      await publishInBackground(env, Number(m[1]));
+    }
     const saved = await db.prepare(`${POST_SELECT} WHERE p.id = ?`).bind(m[1]).first();
     return json(parsePost(saved));
   }
