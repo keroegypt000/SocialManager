@@ -367,17 +367,28 @@ async function route(req, env, url) {
   }
 
   if (path === '/whatsapp/queue' && method === 'GET') {
-    const sel = `SELECT pt.id AS target_id, pt.status AS target_status, p.id AS post_id, p.message, p.image_url, p.media,
-        p.scheduled_at, p.created_at, a.name AS account_name, c.name AS client_name, c.color AS client_color
+    const sel = `SELECT pt.id AS target_id, pt.status AS target_status, pt.error, p.id AS post_id, p.message, p.image_url, p.media,
+        p.scheduled_at, p.created_at, a.id AS account_id, a.name AS account_name,
+        CASE WHEN a.token_enc = '${GATEWAY}' THEN 1 ELSE 0 END AS auto,
+        c.name AS client_name, c.color AS client_color
       FROM post_targets pt JOIN posts p ON p.id = pt.post_id JOIN accounts a ON a.id = pt.account_id JOIN clients c ON c.id = p.client_id
       WHERE a.platform = 'whatsapp'`;
-    const [ready, upcoming] = await db.batch([
+    const week = Date.now() - 7 * 86400000;
+    const [ready, upcoming, published, failed, accounts] = await db.batch([
       db.prepare(`${sel} AND pt.status = 'manual' ORDER BY COALESCE(p.scheduled_at, p.created_at)`),
-      db.prepare(`${sel} AND pt.status = 'pending' AND p.status = 'scheduled' AND p.scheduled_at <= ? ORDER BY p.scheduled_at LIMIT 30`)
+      db.prepare(`${sel} AND pt.status = 'pending' AND p.status IN ('scheduled', 'publishing') AND p.scheduled_at <= ? ORDER BY p.scheduled_at LIMIT 30`)
         .bind(Date.now() + 7 * 86400000),
+      db.prepare(`${sel} AND pt.status = 'published' AND COALESCE(p.scheduled_at, p.created_at) >= ? ORDER BY COALESCE(p.scheduled_at, p.created_at) DESC LIMIT 60`).bind(week),
+      db.prepare(`${sel} AND pt.status = 'failed' AND COALESCE(p.scheduled_at, p.created_at) >= ? ORDER BY COALESCE(p.scheduled_at, p.created_at) DESC LIMIT 20`).bind(week),
+      db.prepare(`SELECT a.id, a.name, c.name AS client_name, c.color AS client_color,
+          CASE WHEN a.token_enc = '${GATEWAY}' THEN 1 ELSE 0 END AS auto
+        FROM accounts a JOIN clients c ON c.id = a.client_id WHERE a.platform = 'whatsapp' ORDER BY c.name, a.name`),
     ]);
     const shape = (r) => ({ ...r, media: mediaOf(r) });
-    return json({ ready: ready.results.map(shape), upcoming: upcoming.results.map(shape) });
+    return json({
+      ready: ready.results.map(shape), upcoming: upcoming.results.map(shape),
+      published: published.results.map(shape), failed: failed.results.map(shape), accounts: accounts.results,
+    });
   }
 
   let wt = path.match(/^\/whatsapp\/targets\/(\d+)\/(done|skip)$/);

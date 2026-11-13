@@ -213,24 +213,40 @@ window.addEventListener('hashchange', router);
 function shell(active) {
   if (!$('#main')) {
     app.innerHTML = `
+      <header class="topbar">
+        <button class="menu-btn" id="menu-btn" aria-label="القايمة" aria-expanded="false">☰</button>
+        <div class="brand">Social <span>Manager</span></div>
+        <a class="btn primary small" href="#/compose">+ منشور</a>
+      </header>
+      <div class="backdrop" id="backdrop" hidden></div>
       <div class="layout">
-        <aside class="sidebar">
+        <aside class="sidebar" id="sidebar">
           <div class="brand">Social <span>Manager</span></div>
           <nav class="nav">
-            <a href="#/dashboard" data-r="dashboard">لوحة التحكم</a>
-            <a href="#/compose" data-r="compose">منشور جديد</a>
-            <a href="#/calendar" data-r="calendar">التقويم</a>
-            <a href="#/posts" data-r="posts">المنشورات</a>
+            <a href="#/dashboard" data-r="dashboard">🏠 لوحة التحكم</a>
+            <a href="#/compose" data-r="compose">✍️ منشور جديد</a>
+            <a href="#/calendar" data-r="calendar">🗓️ التقويم</a>
+            <a href="#/posts" data-r="posts">📋 المنشورات</a>
             <a href="#/reports" data-r="reports">📊 التقارير</a>
             <a href="#/ads" data-r="ads">📢 الإعلانات</a>
             <a href="#/whatsapp" data-r="whatsapp">📱 حالات واتساب <span class="nav-badge" id="wa-badge" hidden></span></a>
-            <a href="#/clients" data-r="clients">العملاء والحسابات</a>
+            <a href="#/clients" data-r="clients">👥 العملاء والحسابات</a>
           </nav>
           <div class="spacer"></div>
           <button class="btn small" id="logout">تسجيل الخروج</button>
         </aside>
         <main class="main" id="main"></main>
       </div>`;
+    // Phones: the menu is a side drawer opened from ☰.
+    const setMenu = (open) => {
+      document.body.classList.toggle('menu-open', open);
+      $('#backdrop').hidden = !open;
+      $('#menu-btn').setAttribute('aria-expanded', String(open));
+    };
+    $('#menu-btn').onclick = () => setMenu(!document.body.classList.contains('menu-open'));
+    $('#backdrop').onclick = () => setMenu(false);
+    $('#sidebar').addEventListener('click', (e) => { if (e.target.closest('a')) setMenu(false); });
+    window.addEventListener('hashchange', () => setMenu(false));
     $('#logout').onclick = async () => {
       await api('/logout', { method: 'POST' });
       me = null;
@@ -1349,28 +1365,109 @@ async function renderWhatsApp(main) {
       </div>`;
   };
 
+  const reload = () => { renderWhatsApp(main); updateWaBadge(); };
+  // A posted/upcoming status as a phone-like tile: media preview or green text card.
+  const DAY_MS = 86400000;
+  const tile = (it, kind) => {
+    const m = it.media || [];
+    const when = it.scheduled_at || it.created_at;
+    const first = m[0];
+    const live = kind === 'published' && Date.now() - when < DAY_MS;
+    const body = first
+      ? first.type === 'video'
+        ? `<video src="${esc(first.url)}" preload="metadata" muted playsinline controls></video>`
+        : `<img src="${esc(first.url)}" alt="" loading="lazy">${m.length > 1 ? `<span class="st-more">+${m.length - 1}</span>` : ''}`
+      : `<div class="st-text">${esc((it.message || '').slice(0, 160))}</div>`;
+    const badgeHtml = {
+      published: live ? `<span class="st-badge live">🟢 ظاهرة · ${esc(relTime(when + DAY_MS).replace('بعد', 'باقي'))}</span>` : '<span class="st-badge">انتهت</span>',
+      upcoming: when < Date.now() ? '<span class="st-badge soon">⏳ بتتنشر دلوقتي</span>' : `<span class="st-badge soon">🕒 ${esc(relTime(when))}</span>`,
+      failed: '<span class="st-badge bad">❌ فشلت</span>',
+    }[kind];
+    return `
+      <div class="st-tile ${kind}" data-post="${it.post_id}">
+        <div class="st-media">${body}${badgeHtml}</div>
+        <div class="st-info">
+          <div class="st-who"><span class="dot" style="background:${esc(it.client_color)}"></span><b>${esc(it.client_name)}</b></div>
+          <div class="muted small">${esc(it.account_name)} · ${it.auto ? '⚡ تلقائي' : '✋ يدوي'}</div>
+          <div class="small">${esc(fmtDate(when))}</div>
+          ${first && it.message ? `<div class="st-cap muted small">${esc(it.message.slice(0, 80))}</div>` : ''}
+          ${kind === 'failed' ? `<div class="target-error">${esc(it.error || '')}</div>
+            <div class="wa-actions"><button class="btn small primary" data-retry="${it.post_id}">🔁 إعادة المحاولة</button></div>` : ''}
+        </div>
+      </div>`;
+  };
+
+  const today = new Date().toDateString();
+  const todayCount = (accId) => [...data.published, ...data.ready].filter((x) => x.account_id === accId && new Date(x.scheduled_at || x.created_at).toDateString() === today).length;
+  const liveNow = data.published.filter((x) => Date.now() - (x.scheduled_at || x.created_at) < DAY_MS);
+  const older = data.published.filter((x) => Date.now() - (x.scheduled_at || x.created_at) >= DAY_MS);
+  const anyManual = (data.accounts || []).some((a) => !a.auto);
+
   main.innerHTML = `
     <div class="page-head"><h1>📱 حالات واتساب</h1><a class="btn primary" href="#/compose?platform=whatsapp">+ حالة جديدة</a></div>
-    <form class="card wa-limit" id="wa-limit">
-      <label for="wa-limit-n">🛡️ الحد الأقصى للحالات في اليوم لكل رقم</label>
-      <input id="wa-limit-n" type="number" min="0" max="50" placeholder="من غير حد" value="${limit || ''}">
-      <button class="btn small primary">حفظ</button>
-      <span class="muted small">${limit ? `دلوقتي: ${limit} في اليوم. المنصة مش هتسمح تجدول أكتر من كده لنفس الرقم في نفس اليوم.` : 'سيبه فاضي لو مش عايز حد. (اختياري)'}</span>
-      <label class="check" style="width:100%;margin:0"><input type="checkbox" id="wa-media-only" ${mediaOnly ? 'checked' : ''}>
-        🖼️ لو المنشور فيه صورة أو فيديو: انشر على الواتساب <b>الصورة/الفيديو بس</b> من غير الكلام والهاشتاج (الكلام بيفضل على فيسبوك وإنستجرام)</label>
-    </form>
-    ${pushBox}
-    ${!shareOk ? '<div class="notice">💡 عشان تنشر بلمسة واحدة، افتح الصفحة دي من <b>الموبايل</b> اللي عليه واتساب. من الكمبيوتر تقدر تحمّل الصورة وتنسخ الكلام.</div>' : ''}
-    <h2>جاهزة للنشر ${data.ready.length ? `(${data.ready.length})` : ''}</h2>
-    <div class="grid wa-grid">${data.ready.length ? data.ready.map(card).join('') : '<div class="card empty">مفيش حالات مستنياك دلوقتي 👌</div>'}</div>
-    <h2 style="margin-top:24px">الجاية (الأسبوع ده)</h2>
-    <div class="card">${data.upcoming.length ? data.upcoming.map((it) => `
-      <div class="post"><div class="body">
-        <div class="meta" style="margin:0"><span class="dot" style="background:${esc(it.client_color)}"></span><b>${esc(it.client_name)}</b> · ${esc(fmtDate(it.scheduled_at))} ${mediaIcon(it)}</div>
-        <div class="text">${esc(it.message) || '<span class="muted">(صورة بدون نص)</span>'}</div>
-      </div></div>`).join('') : '<div class="empty">مفيش حالات مجدولة الأسبوع ده. ضيف حساب "حالة واتساب" للعميل من صفحة العملاء، واختاره في منشور جديد.</div>'}</div>`;
 
-  const reload = () => { renderWhatsApp(main); updateWaBadge(); };
+    ${(data.accounts || []).length ? `<div class="wa-numbers">${data.accounts.map((a) => `
+      <div class="wa-num">
+        <span class="dot" style="background:${esc(a.client_color)}"></span>
+        <div><b>${esc(a.client_name)}</b><div class="muted small">${esc(a.name)}</div></div>
+        <span class="badge ${a.auto ? 'published' : ''}">${a.auto ? '⚡ تلقائي' : '✋ يدوي'}</span>
+        <span class="small">النهارده: <b>${fmtNum(todayCount(a.id))}</b>${limit ? ` من ${fmtNum(limit)}` : ''}</span>
+      </div>`).join('')}</div>`
+      : '<div class="notice">مفيش أرقام واتساب لسه. من <a href="#/clients">العملاء والحسابات</a> دوس <b>+ حالة واتساب</b> للعميل، وبعدين <b>⚡ خليها تلقائي</b>.</div>'}
+
+    ${data.ready.length ? `<section class="wa-sec">
+      <h2>✋ مستنية تنشرها بإيدك <span class="count-pill">${data.ready.length}</span></h2>
+      ${!shareOk ? '<div class="notice small">💡 افتح الصفحة دي من <b>الموبايل</b> اللي عليه واتساب عشان تنشر بلمسة واحدة.</div>' : ''}
+      <div class="grid wa-grid">${data.ready.map(card).join('')}</div>
+    </section>` : ''}
+
+    ${data.failed.length ? `<section class="wa-sec">
+      <h2>❌ فشلت <span class="count-pill bad">${data.failed.length}</span></h2>
+      <div class="st-grid">${data.failed.map((it) => tile(it, 'failed')).join('')}</div>
+    </section>` : ''}
+
+    <section class="wa-sec">
+      <h2>📤 منشورة دلوقتي <span class="muted small">(الحالة بتفضل 24 ساعة)</span> <span class="count-pill">${liveNow.length}</span></h2>
+      ${liveNow.length ? `<div class="st-grid">${liveNow.map((it) => tile(it, 'published')).join('')}</div>`
+        : '<div class="card empty">مفيش حالات ظاهرة دلوقتي.</div>'}
+    </section>
+
+    <section class="wa-sec">
+      <h2>🕒 الجاية <span class="count-pill">${data.upcoming.length}</span></h2>
+      ${data.upcoming.length ? `<div class="st-grid">${data.upcoming.map((it) => tile(it, 'upcoming')).join('')}</div>`
+        : '<div class="card empty">مفيش حالات مجدولة الأسبوع ده.</div>'}
+    </section>
+
+    ${older.length ? `<details class="wa-sec card"><summary><b>🗂️ اتنشرت قبل كده (آخر أسبوع)</b> <span class="count-pill">${older.length}</span></summary>
+      <div class="st-grid" style="margin-top:12px">${older.map((it) => tile(it, 'published')).join('')}</div></details>` : ''}
+
+    <details class="card wa-settings">
+      <summary><b>⚙️ إعدادات الحالات</b></summary>
+      <form class="wa-limit" id="wa-limit">
+        <label for="wa-limit-n">🛡️ الحد الأقصى للحالات في اليوم لكل رقم</label>
+        <input id="wa-limit-n" type="number" min="0" max="50" placeholder="من غير حد" value="${limit || ''}">
+        <button class="btn small primary">حفظ</button>
+        <span class="muted small">${limit ? `دلوقتي: ${limit} في اليوم.` : 'فاضي = من غير حد.'}</span>
+      </form>
+      <label class="check"><input type="checkbox" id="wa-media-only" ${mediaOnly ? 'checked' : ''}>
+        🖼️ لو المنشور فيه صورة أو فيديو: انشر على الواتساب <b>الصورة/الفيديو بس</b> (الكلام بيفضل على فيسبوك وإنستجرام)</label>
+      ${anyManual ? pushBox : ''}
+    </details>`;
+
+  main.querySelectorAll('[data-retry]').forEach((b) => {
+    b.onclick = async () => {
+      b.disabled = true;
+      b.textContent = 'جاري النشر…';
+      try {
+        const r = await api(`/posts/${b.dataset.retry}/publish`, { method: 'POST' });
+        toast(publishMsg(r.status));
+      } catch (err) {
+        toast(err.message);
+      }
+      reload();
+    };
+  });
+
   $('#wa-media-only').onchange = async (e) => {
     await api('/whatsapp/limit', { method: 'PUT', body: { media_only: e.target.checked } });
     toast(e.target.checked ? 'الواتساب هياخد الصور والفيديو بس ✅' : 'الواتساب هياخد الكلام مع الصورة');
@@ -1994,6 +2091,23 @@ async function renderCalendar(main) {
   }
 
   const weekdays = ['السبت', 'الأحد', 'الاثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة'];
+  // Phones: the month as a list of days (only days of this month that have posts, plus today).
+  const agendaDays = [];
+  for (let d = new Date(year, month, 1); d.getMonth() === month; d.setDate(d.getDate() + 1)) {
+    const list = (byDay[d.toDateString()] || []).sort((a, b) => postTime(a) - postTime(b));
+    const isToday = d.toDateString() === today.toDateString();
+    if (list.length || isToday) agendaDays.push({ date: new Date(d), list, isToday });
+  }
+  const agendaHtml = agendaDays.length ? agendaDays.map(({ date, list, isToday }) => `
+    <section class="ag-day ${isToday ? 'today' : ''}">
+      <div class="ag-head"><b>${esc(date.toLocaleDateString('ar-EG', { weekday: 'long', day: 'numeric', month: 'long' }))}</b>${isToday ? ' <span class="badge scheduled">النهارده</span>' : ''}
+        <a class="btn small" href="#/compose?date=${toDateInput(date)}">+ منشور</a></div>
+      ${list.length ? list.map((p) => `
+        <button type="button" class="ag-item" data-ag="${p.id}" style="--c:${esc(p.client_color)}">
+          <span class="ag-time">${p.series_id ? '🔁 ' : ''}${fmtTime(postTime(p))}</span>
+          <span class="ag-body"><b>${esc(p.client_name)}</b> ${badge(p.status)}<br><span class="muted small">${mediaIcon(p)}${esc(p.message.slice(0, 70) || '📷')}</span></span>
+        </button>`).join('') : '<div class="muted small" style="padding:6px 0">مفيش منشورات</div>'}
+    </section>`).join('') : '<div class="card empty">مفيش منشورات الشهر ده.</div>';
   main.innerHTML = `
     <div class="page-head">
       <h1>${first.toLocaleDateString('ar-EG', { month: 'long', year: 'numeric' })}</h1>
@@ -2008,9 +2122,11 @@ async function renderCalendar(main) {
     </div>
     <div class="cal-head">${weekdays.map((w) => `<div>${w}</div>`).join('')}</div>
     <div class="cal">${days.join('')}</div>
+    <div class="cal-agenda">${agendaHtml}</div>
     <dialog id="post-dialog" class="dialog"></dialog>`;
 
   const reload = () => renderCalendar(main);
+  main.querySelectorAll('[data-ag]').forEach((b) => { b.onclick = () => openPostDialog(byId.get(b.dataset.ag), reload); });
   $('#prev').onclick = () => { calMonth = new Date(year, month - 1, 1); reload(); };
   $('#next').onclick = () => { calMonth = new Date(year, month + 1, 1); reload(); };
   $('#this').onclick = () => { calMonth = null; reload(); };
@@ -2311,6 +2427,7 @@ async function renderPosts(main, params) {
     <div class="post-tabs" role="tablist">${POST_TABS.map(([k, l]) => `
       <button class="post-tab ${k === tab ? 'on' : ''} ${k === 'attention' && counts.attention ? 'warn' : ''}" data-tab="${k}" role="tab" aria-selected="${k === tab}">
         ${l} <span class="count">${fmtNum(counts[k] || 0)}</span></button>`).join('')}</div>
+    <details class="pf-wrap" ${anyFilter || window.innerWidth > 700 ? 'open' : ''}><summary class="btn small">🔎 فلترة${anyFilter ? ' (شغالة)' : ''}</summary>
     <form class="card post-filters" id="pf">
       <div><label for="f-client">العميل</label>
         <select id="f-client"><option value="">كل العملاء</option>${clients.map((c) => `<option value="${c.id}" ${String(c.id) === clientId ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select></div>
@@ -2322,7 +2439,7 @@ async function renderPosts(main, params) {
       <div class="pf-custom" ${period === 'custom' ? '' : 'hidden'}><label for="f-to">لحد</label><input id="f-to" type="date" value="${esc(get('to'))}"></div>
       <div class="pf-search"><label for="f-q">بحث في الكلام</label><input id="f-q" type="search" value="${esc(text)}" placeholder="كلمة من المنشور"></div>
       ${anyFilter ? '<div style="flex:0"><button type="button" class="btn small" id="f-clear">✕ شيل الفلاتر</button></div>' : ''}
-    </form>
+    </form></details>
     ${posts.length ? groups.map((g) => `
       <section class="day-group">
         <h3 class="day-head">${esc(dayLabel(g.at))} <span class="muted small">(${g.items.length})</span></h3>
