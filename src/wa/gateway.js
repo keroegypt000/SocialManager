@@ -267,10 +267,12 @@ export class WhatsAppGateway extends DurableObject {
       const onAck = (node) => { if (node?.attrs?.id) acks.set(node.attrs.id, node.attrs); };
       this.sock.ws.on('CB:ack,class:message', onAck);
       let id;
+      let sentInfo = null;
       try {
         if (media) {
           // Our own media path (no temp files): read from storage, encrypt, upload, relay.
-          const content = await prepareStatusMedia(this.env, this.sock, media, caption);
+          const { info: mediaInfo, ...content } = await prepareStatusMedia(this.env, this.sock, media, caption);
+          sentInfo = mediaInfo;
           const msg = generateWAMessageFromContent('status@broadcast', content, { userJid: this.sock.user.id });
           id = msg.key.id;
           await this.sock.relayMessage('status@broadcast', msg.message, { messageId: id, statusJidList: audience });
@@ -289,7 +291,7 @@ export class WhatsAppGateway extends DurableObject {
       }
       const ack = acks.get(id) || null;
       const pn = this.sql.exec('SELECT COUNT(*) AS n FROM contacts WHERE pn IS NOT NULL').toArray()[0].n;
-      const diag = { at: Date.now(), audience: audience.length - 1, with_phone: pn, lids: aud.lids, mapped: aud.mapped, dropped: aud.dropped, kind: media?.type || 'text', id, ack };
+      const diag = { at: Date.now(), audience: audience.length - 1, with_phone: pn, lids: aud.lids, mapped: aud.mapped, dropped: aud.dropped, kind: media?.type || 'text', media: sentInfo, id, ack };
       this.put('last_status', JSON.stringify(diag));
       if (!ack) throw new Error('واتساب مأكدش استلام الحالة (مفيش رد من السيرفر خلال 15 ثانية). جرّب تاني.');
       if (ack.error) throw new Error(`واتساب رفض الحالة (كود ${ack.error}). ابعت الرقم ده للدعم.`);
@@ -309,7 +311,7 @@ export class WhatsAppGateway extends DurableObject {
   async debugPrepareMedia(media) {
     if (!this.env.WA_MEDIA_TEST_HTTP) throw new Error('not available');
     const fake = { refreshMediaConn: async () => ({ auth: 'test', hosts: [{ hostname: this.env.WA_MEDIA_TEST_HTTP }] }) };
-    const c = await prepareStatusMedia(this.env, fake, media, 'cap');
+    const { info: _i, ...c } = await prepareStatusMedia(this.env, fake, media, 'cap');
     const m = c.imageMessage || c.videoMessage;
     return { type: Object.keys(c)[0], url: m.url, len: m.fileLength, enc: m.fileEncSha256.toString('base64'), seconds: m.seconds, width: m.width, height: m.height };
   }

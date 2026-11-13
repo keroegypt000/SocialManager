@@ -116,7 +116,12 @@ export async function prepareStatusMedia(env, sock, media, caption) {
   const type = media.type === 'video' ? 'video' : 'image';
   const src = await source(env, media);
   if (type === 'video' && src.size > MAX_VIDEO) throw new Error('فيديو الحالة لازم يكون أقل من 64 ميجا');
-  const info = type === 'video' ? await mp4Info(src) : src.info || {};
+  let info = type === 'video' ? await mp4Info(src) : src.info || {};
+  if (type === 'video') {
+    // The browser measured the video at upload; it's the most reliable source.
+    if (media.duration > 0) info.seconds = Math.max(1, Math.round(media.duration));
+    if (media.width > 0 && media.height > 0) { info.width = Math.round(media.width); info.height = Math.round(media.height); }
+  }
   const mediaKey = randomBytes(32);
   const keys = await getMediaKeys(mediaKey, type);
 
@@ -150,6 +155,7 @@ export async function prepareStatusMedia(env, sock, media, caption) {
   if (!result) throw lastErr || new Error('رفع الميديا لواتساب فشل');
 
   return {
+    info,
     [`${type}Message`]: {
       url: result.url,
       directPath: result.direct_path,

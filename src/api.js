@@ -43,7 +43,13 @@ const MAX_IMAGES = 10;
 // Media list from the form: up to 10 images (album) or exactly one video.
 function readMedia(b) {
   let list = Array.isArray(b.media) ? b.media : b.image_url ? [{ type: 'image', url: b.image_url }] : [];
-  list = list.map((m) => ({ type: m.type === 'video' ? 'video' : 'image', url: cleanUrl(m.url) })).filter((m) => m.url);
+  const num = (v, max) => (Number.isFinite(Number(v)) && Number(v) > 0 && Number(v) <= max ? Math.round(Number(v) * 100) / 100 : undefined);
+  list = list.map((m) => ({
+    type: m.type === 'video' ? 'video' : 'image',
+    url: cleanUrl(m.url),
+    // Measured by the browser at upload (used for WhatsApp statuses).
+    ...(m.type === 'video' ? { duration: num(m.duration, 3600), width: num(m.width, 10000), height: num(m.height, 10000) } : {}),
+  })).filter((m) => m.url);
   const videos = list.filter((m) => m.type === 'video');
   if (videos.length > 1) bad('فيديو واحد بس في المنشور');
   if (videos.length && list.length > 1) bad('مينفعش تجمع فيديو وصور في نفس المنشور');
