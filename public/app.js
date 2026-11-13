@@ -1118,6 +1118,7 @@ async function renderCompose(main, params) {
             <input id="p-file" type="file" accept="image/*,video/mp4,video/quicktime,.mov" multiple hidden>
             <span id="p-drop-text">📷🎬 دوس هنا واختار صور (لحد 10 = ألبوم) أو فيديو واحد، أو اسحبهم وسيبهم هنا</span>
           </label>
+          <button type="button" class="btn small" id="p-make-video" style="margin-top:8px">🎞️ اعمل فيديو من الصور بموسيقى</button>
           <div class="progress" id="p-progress" hidden><div></div><span></span></div>
           <div class="time-row" id="p-url-row" style="margin-top:8px">
             <input id="p-url" type="url" dir="ltr" placeholder="أو حط رابط صورة: https://...jpg">
@@ -1396,6 +1397,21 @@ async function renderCompose(main, params) {
     }
   };
   $('#p-file').onchange = (e) => addFiles(e.target.files);
+  $('#p-make-video').onclick = () => {
+    if (!window.openVideoMaker) return toast('صانع الفيديو لسه بيحمّل، جرّب كمان ثانية');
+    window.openVideoMaker({
+      esc, toast,
+      onDone: async (out) => {
+        if (out.type !== 'video/mp4') {
+          toast('المتصفح ده عمل الفيديو WebM، وإنستجرام مش بيقبله. افتح المنصة من Chrome محدّث وجرّب تاني.');
+          return;
+        }
+        knownVideoInfo.set(out.file, { duration: out.duration, width: out.width, height: out.height });
+        await addFiles([out.file]);
+        toast('الفيديو اتعمل واترفع ✅ تقدر تنشره دلوقتي');
+      },
+    });
+  };
   const drop = $('#p-drop');
   drop.ondragover = (e) => { e.preventDefault(); drop.classList.add('over'); };
   drop.ondragleave = () => drop.classList.remove('over');
@@ -1526,7 +1542,11 @@ async function renderCompose(main, params) {
 }
 
 // Duration and size of a video file, read in the browser.
+// Videos made by the 🎞️ maker: we already know their exact length and size.
+const knownVideoInfo = new WeakMap();
+
 function videoInfo(file) {
+  if (knownVideoInfo.has(file)) return Promise.resolve(knownVideoInfo.get(file));
   return new Promise((resolve, reject) => {
     const v = document.createElement('video');
     const url = URL.createObjectURL(file);
