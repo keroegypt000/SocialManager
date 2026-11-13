@@ -487,3 +487,17 @@ a.top-post[href]:hover { border-color: var(--primary); }
   .post-tabs { flex-wrap: nowrap; overflow-x: auto; padding-bottom: 4px; scrollbar-width: none; }
   .post-tab { white-space: nowrap; }
 }
+
+/* Team page */
+.users-grid { grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); margin-top: 14px; }
+.user-card { display: grid; gap: 8px; }
+.user-card.off { opacity: .6; }
+.user-perms { display: flex; gap: 4px; flex-wrap: wrap; }
+.pick-list { display: grid; gap: 4px; max-height: 220px; overflow-y: auto; padding: 4px 2px; }
+.pick-list .check { font-weight: 400; align-items: flex-start; }
+.who { padding: 6px 10px; }
+/* Installed app on phones with a notch */
+@media (max-width: 860px) {
+  .topbar { padding-top: max(8px, env(safe-area-inset-top)); }
+  .sidebar { padding-top: max(20px, env(safe-area-inset-top)); padding-bottom: max(20px, env(safe-area-inset-bottom)); }
+}

@@ -59,7 +59,7 @@ function askConfirm(message, { ok = 'تمام', cancel = 'إلغاء' } = {}) {
     const dlg = document.createElement('dialog');
     dlg.className = 'dialog confirm-dialog';
     dlg.innerHTML = `<form method="dialog" class="dlg-body">
-      <div style="font-weight:600;line-height:1.8">${esc(message)}</div>
+      <div style="font-weight:600;line-height:1.8;white-space:pre-line">${esc(message)}</div>
       <div class="dlg-actions" style="border:0;padding:0">
         <button class="btn primary" value="ok">${esc(ok)}</button>
         <button class="btn" value="cancel">${esc(cancel)}</button>
@@ -166,14 +166,20 @@ const routes = {
   whatsapp: renderWhatsApp,
   reports: renderReports,
   ads: renderAds,
+  users: renderUsers,
 };
+// Which permission each page needs ('owner' = only the account owner).
+const ROUTE_PERM = { compose: 'posts', calendar: 'posts', posts: 'posts', whatsapp: 'whatsapp', reports: 'reports', ads: 'ads', clients: 'owner', connect: 'owner', users: 'owner' };
+const isOwnerUser = () => !me?.user || me.user.owner; // older servers: treat as owner
+const can = (perm) => !perm || isOwnerUser() || (perm !== 'owner' && (me.user.perms || []).includes(perm));
 
 let me = null;
 
 function currentRoute() {
   const hash = location.hash.replace(/^#\/?/, '');
   const [name, query = ''] = hash.split('?');
-  return { name: routes[name] ? name : 'dashboard', params: new URLSearchParams(query) };
+  const ok = routes[name] && can(ROUTE_PERM[name]);
+  return { name: ok ? name : 'dashboard', params: new URLSearchParams(query) };
 }
 
 async function router() {
@@ -230,9 +236,11 @@ function shell(active) {
             <a href="#/reports" data-r="reports">📊 التقارير</a>
             <a href="#/ads" data-r="ads">📢 الإعلانات</a>
             <a href="#/whatsapp" data-r="whatsapp">📱 حالات واتساب <span class="nav-badge" id="wa-badge" hidden></span></a>
-            <a href="#/clients" data-r="clients">👥 العملاء والحسابات</a>
+            <a href="#/clients" data-r="clients">🏢 العملاء والحسابات</a>
+            <a href="#/users" data-r="users">👥 الفريق والصلاحيات</a>
           </nav>
           <div class="spacer"></div>
+          <div class="who small"><span class="muted">داخل باسم:</span> <b id="who-name"></b></div>
           <button class="btn small" id="logout">تسجيل الخروج</button>
         </aside>
         <main class="main" id="main"></main>
@@ -253,7 +261,13 @@ function shell(active) {
       renderLogin();
     };
   }
-  document.querySelectorAll('.nav a').forEach((a) => a.classList.toggle('active', a.dataset.r === active));
+  document.querySelectorAll('.nav a').forEach((a) => {
+    a.classList.toggle('active', a.dataset.r === active);
+    a.hidden = !can(ROUTE_PERM[a.dataset.r]);
+  });
+  const who = $('#who-name');
+  if (who) who.textContent = me?.user ? (me.user.owner ? 'صاحب الحساب' : me.user.name) : '';
+  document.querySelectorAll('.topbar a[href="#/compose"]').forEach((a) => { a.hidden = !can('posts'); });
 }
 
 // ---------- login ----------
@@ -263,6 +277,10 @@ function renderLogin() {
     <div class="login">
       <form class="card" id="login-form">
         <div class="brand" style="text-align:center">Social <span>Manager</span></div>
+        <div class="field">
+          <label for="un">اسم المستخدم <span class="muted small">(صاحب الحساب يسيبه فاضي)</span></label>
+          <input id="un" dir="ltr" autocomplete="username" autocapitalize="none" spellcheck="false">
+        </div>
         <div class="field">
           <label for="pw">كلمة السر</label>
           <input id="pw" type="password" autocomplete="current-password" required autofocus>
@@ -276,7 +294,7 @@ function renderLogin() {
     const btn = e.target.querySelector('button');
     btn.disabled = true;
     try {
-      await api('/login', { method: 'POST', body: { password: $('#pw').value } });
+      await api('/login', { method: 'POST', body: { username: $('#un').value.trim(), password: $('#pw').value } });
       app.innerHTML = '';
       router();
     } catch (err) {
@@ -398,7 +416,7 @@ async function renderDashboard(main) {
   const $ = (sel) => main.querySelector(sel); // this page's own elements only
   const s = await api('/stats');
   main.innerHTML = `
-    <div class="page-head"><h1>لوحة التحكم</h1><a class="btn primary" href="#/compose">+ منشور جديد</a></div>
+    <div class="page-head"><h1>لوحة التحكم</h1>${can('posts') ? '<a class="btn primary" href="#/compose">+ منشور جديد</a>' : ''}</div>
     ${!me.metaConfigured ? `<div class="notice">ربط فيسبوك وإنستجرام لسه مش متفعّل. ضيف <code>META_APP_ID</code> و <code>META_APP_SECRET</code> في Cloudflare (الخطوات في README).</div>` : ''}
     <div class="grid stats">
       <div class="card stat"><div class="label">العملاء</div><div class="value">${s.clients}</div></div>
@@ -599,6 +617,118 @@ function clientCard(c, accounts, clients) {
         <a class="btn small" href="#/compose?client=${c.id}">منشور جديد</a>
       </div>
     </div>`;
+}
+
+// ---------- team members (owner only) ----------
+const PERM_LABELS = {
+  posts: ['✍️ نشر وجدولة', 'يكتب منشورات وينشرها ويجدولها ويعدّلها (التقويم والمنشورات)'],
+  whatsapp: ['📱 حالات واتساب', 'يشوف صفحة حالات واتساب وينشر الحالات اليدوي'],
+  reports: ['📊 التقارير', 'يشوف تقارير العملاء بتوعه ويعمل لينك تقرير'],
+  ads: ['📢 الإعلانات', 'يشوف الحملات ويشغّلها ويوقفها ويعمل حملات جديدة (بفلوس!)'],
+};
+
+async function renderUsers(main) {
+  const $ = (sel) => main.querySelector(sel);
+  const [users, clients] = await Promise.all([api('/users'), loadClients()]);
+  const clientName = (id) => clients.find((c) => c.id === id)?.name || `#${id}`;
+  main.innerHTML = `
+    <div class="page-head"><h1>👥 الفريق والصلاحيات</h1><button class="btn primary" id="add-user">+ شخص جديد</button></div>
+    <div class="notice small">كل شخص بيدخل باسم مستخدم وكلمة سر بتوعه، ويشوف <b>العملاء اللي تختارهم بس</b>، ويعمل <b>اللي تسمحله بيه بس</b>.
+      إنت (صاحب الحساب) بتدخل زي ما انت: من غير اسم مستخدم، بكلمة السر بتاعتك. ربط الحسابات وإضافة العملاء والفريق ليك انت بس.</div>
+    ${users.length ? `<div class="grid users-grid">${users.map((u) => `
+      <div class="card user-card ${u.active ? '' : 'off'}">
+        <div class="client-head"><h2>${esc(u.name)}</h2>${u.active ? '' : '<span class="badge failed">موقوف</span>'}</div>
+        <div class="muted small" dir="ltr" style="text-align:end">@${esc(u.username)}</div>
+        <div class="small"><b>العملاء:</b> ${u.all_clients ? 'كل العملاء' : (u.clients || []).map((id) => esc(clientName(id))).join('، ') || '—'}</div>
+        <div class="user-perms">${u.perms.length ? u.perms.map((p) => `<span class="badge published">${esc(PERM_LABELS[p]?.[0] || p)}</span>`).join(' ') : '<span class="muted small">مفيش صلاحيات</span>'}</div>
+        <div class="muted small">آخر دخول: ${u.last_login ? esc(fmtDate(u.last_login)) : 'لسه مدخلش'}</div>
+        <div class="wa-actions">
+          <button class="btn small" data-edit="${u.id}">✏️ تعديل</button>
+          <button class="btn small" data-toggle="${u.id}" data-active="${u.active ? 1 : 0}">${u.active ? '⏸ إيقاف' : '▶ تشغيل'}</button>
+          <button class="btn small danger" data-del="${u.id}">حذف</button>
+        </div>
+      </div>`).join('')}</div>`
+      : '<div class="card empty">لسه مفيش حد في الفريق. دوس <b>+ شخص جديد</b>.</div>'}`;
+
+  const reload = () => renderUsers(main);
+  $('#add-user').onclick = () => openUserDialog(null, clients, reload);
+  main.querySelectorAll('[data-edit]').forEach((b) => { b.onclick = () => openUserDialog(users.find((u) => String(u.id) === b.dataset.edit), clients, reload); });
+  main.querySelectorAll('[data-toggle]').forEach((b) => {
+    b.onclick = async () => {
+      const on = b.dataset.active !== '1';
+      if (!on && !(await askConfirm('الشخص ده هيتقفل حسابه ويخرج من المنصة فوراً. تمام؟', { ok: 'إيقاف' }))) return;
+      await api(`/users/${b.dataset.toggle}`, { method: 'PUT', body: { active: on } });
+      toast(on ? 'اتشغّل ✅' : 'اتوقف ⏸');
+      reload();
+    };
+  });
+  main.querySelectorAll('[data-del]').forEach((b) => {
+    b.onclick = async () => {
+      if (!(await askConfirm('تحذف الشخص ده؟ المنشورات اللي عملها هتفضل موجودة.', { ok: 'احذف' }))) return;
+      await api(`/users/${b.dataset.del}`, { method: 'DELETE' });
+      toast('اتحذف');
+      reload();
+    };
+  });
+}
+
+function openUserDialog(user, clients, done) {
+  const dlg = document.createElement('dialog');
+  dlg.className = 'dialog';
+  const has = (id) => user && !user.all_clients && (user.clients || []).includes(id);
+  dlg.innerHTML = `<form method="dialog" class="dlg-body">
+    <div class="dlg-head"><b>${user ? `✏️ تعديل: ${esc(user.name)}` : '+ شخص جديد في الفريق'}</b><button class="btn small dlg-close" value="close">✕</button></div>
+    <div class="row">
+      <div><label>الاسم</label><input name="name" required value="${esc(user?.name || '')}" placeholder="مثلاً: أحمد"></div>
+      <div><label>اسم المستخدم (للدخول)</label><input name="username" required dir="ltr" autocomplete="off" value="${esc(user?.username || '')}" placeholder="ahmed"></div>
+    </div>
+    <div class="field"><label>كلمة السر ${user ? '<span class="muted small">(سيبها فاضية لو مش هتغيّرها)</span>' : ''}</label>
+      <div style="display:flex;gap:6px"><input name="password" type="text" dir="ltr" autocomplete="new-password" ${user ? '' : 'required'} minlength="6" placeholder="6 حروف أو أكتر">
+      <button type="button" class="btn small" data-gen>🎲 اعمل واحدة</button></div></div>
+    <label>العملاء اللي يشوفهم</label>
+    <label class="check"><input type="checkbox" name="all" ${user?.all_clients ? 'checked' : ''}> كل العملاء (حتى اللي هيتضافوا بعدين)</label>
+    <div class="pick-list" data-clients ${user?.all_clients ? 'hidden' : ''}>${clients.map((c) => `
+      <label class="check"><input type="checkbox" name="client" value="${c.id}" ${has(c.id) ? 'checked' : ''}>
+        <span class="dot" style="background:${esc(c.color)}"></span> ${esc(c.name)}</label>`).join('')}</div>
+    <label style="margin-top:8px">يقدر يعمل إيه</label>
+    <div class="pick-list">${Object.entries(PERM_LABELS).map(([k, [l, hint]]) => `
+      <label class="check"><input type="checkbox" name="perm" value="${k}" ${(user ? user.perms.includes(k) : k === 'posts') ? 'checked' : ''}>
+        <span><b>${l}</b><br><span class="muted small">${hint}</span></span></label>`).join('')}</div>
+    <div id="u-err" class="notice bad" hidden></div>
+    <div class="dlg-actions" style="border:0;padding:0"><button type="button" class="btn primary" data-save>${user ? 'حفظ' : 'ضيف'}</button></div>
+  </form>`;
+  document.body.appendChild(dlg);
+  dlg.addEventListener('close', () => dlg.remove());
+  const f = dlg.querySelector('form');
+  f.elements.all.onchange = (e) => { dlg.querySelector('[data-clients]').hidden = e.target.checked; };
+  dlg.querySelector('[data-gen]').onclick = () => {
+    const chars = 'abcdefghjkmnpqrstuvwxyz23456789';
+    f.elements.password.value = Array.from(crypto.getRandomValues(new Uint8Array(10)), (n) => chars[n % chars.length]).join('');
+  };
+  dlg.querySelector('[data-save]').onclick = async (e) => {
+    const errBox = dlg.querySelector('#u-err');
+    const payload = {
+      name: f.elements.name.value, username: f.elements.username.value, password: f.elements.password.value || undefined,
+      all_clients: f.elements.all.checked,
+      clients: [...f.querySelectorAll('[name=client]:checked')].map((x) => Number(x.value)),
+      perms: [...f.querySelectorAll('[name=perm]:checked')].map((x) => x.value),
+    };
+    e.target.disabled = true;
+    try {
+      await api(user ? `/users/${user.id}` : '/users', { method: user ? 'PUT' : 'POST', body: payload });
+      dlg.close();
+      toast(user ? 'اتحفظ ✅' : 'اتضاف ✅');
+      if (payload.password) {
+        await askConfirm(`ابعت للشخص ده بيانات الدخول:\n\nاللينك: ${location.origin}\nاسم المستخدم: ${payload.username.trim().toLowerCase()}\nكلمة السر: ${payload.password}`, { ok: 'تمام', cancel: 'قفل' });
+      }
+      done();
+    } catch (err) {
+      errBox.textContent = err.message;
+      errBox.hidden = false;
+      e.target.disabled = false;
+    }
+  };
+  dlg.showModal();
 }
 
 // ---------- automatic WhatsApp statuses (our own gateway inside Cloudflare) ----------
@@ -1441,7 +1571,7 @@ async function renderWhatsApp(main) {
     ${older.length ? `<details class="wa-sec card"><summary><b>🗂️ اتنشرت قبل كده (آخر أسبوع)</b> <span class="count-pill">${older.length}</span></summary>
       <div class="st-grid" style="margin-top:12px">${older.map((it) => tile(it, 'published')).join('')}</div></details>` : ''}
 
-    <details class="card wa-settings">
+    ${isOwnerUser() ? `<details class="card wa-settings">
       <summary><b>⚙️ إعدادات الحالات</b></summary>
       <form class="wa-limit" id="wa-limit">
         <label for="wa-limit-n">🛡️ الحد الأقصى للحالات في اليوم لكل رقم</label>
@@ -1452,7 +1582,7 @@ async function renderWhatsApp(main) {
       <label class="check"><input type="checkbox" id="wa-media-only" ${mediaOnly ? 'checked' : ''}>
         🖼️ لو المنشور فيه صورة أو فيديو: انشر على الواتساب <b>الصورة/الفيديو بس</b> (الكلام بيفضل على فيسبوك وإنستجرام)</label>
       ${anyManual ? pushBox : ''}
-    </details>`;
+    </details>` : (anyManual ? pushBox : '')}`;
 
   main.querySelectorAll('[data-retry]').forEach((b) => {
     b.onclick = async () => {
@@ -1468,11 +1598,11 @@ async function renderWhatsApp(main) {
     };
   });
 
-  $('#wa-media-only').onchange = async (e) => {
+  if ($('#wa-media-only')) $('#wa-media-only').onchange = async (e) => {
     await api('/whatsapp/limit', { method: 'PUT', body: { media_only: e.target.checked } });
     toast(e.target.checked ? 'الواتساب هياخد الصور والفيديو بس ✅' : 'الواتساب هياخد الكلام مع الصورة');
   };
-  $('#wa-limit').onsubmit = async (e) => {
+  if ($('#wa-limit')) $('#wa-limit').onsubmit = async (e) => {
     e.preventDefault();
     const r = await api('/whatsapp/limit', { method: 'PUT', body: { limit: Number($('#wa-limit-n').value) || 0 } });
     toast(r.limit ? `الحد بقى ${r.limit} حالة في اليوم لكل رقم 🛡️` : 'اتشال الحد');

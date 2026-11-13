@@ -1,6 +1,6 @@
 import { ensureSchema } from './db.js';
 import { handleApi, json } from './api.js';
-import { requireSecrets, isAuthed } from './auth.js';
+import { requireSecrets, isOwner } from './auth.js';
 import { metaStart, metaCallback } from './meta.js';
 import { runDuePosts, runProcessing, cleanupVideos } from './publisher.js';
 import { serveVideo } from './media.js';
@@ -56,7 +56,8 @@ export default {
     try {
       // Public: a client connecting their own pages with an invite link.
       if (isInvite) return await handleInvite(req, env, url);
-      const authed = await isAuthed(req, env);
+      // Connecting accounts is for the owner only (team members can't).
+      const authed = await isOwner(req, env);
       // The callback serves both you (logged in) and invited clients (not logged in).
       if (url.pathname === '/auth/meta/callback') return await metaCallback(env, url, { isAdmin: authed });
       if (!authed) return Response.redirect(url.origin + '/', 302);

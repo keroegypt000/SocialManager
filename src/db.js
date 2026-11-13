@@ -62,6 +62,19 @@ const SCHEMA = [
   )`,
   // Small key/value store (e.g. the web-push keys, generated on first use).
   `CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
+  // Team members: their own login, the clients they can see, and what they can do.
+  `CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    name TEXT NOT NULL,
+    pass_hash TEXT NOT NULL,
+    clients TEXT NOT NULL DEFAULT '[]',
+    perms TEXT NOT NULL DEFAULT '[]',
+    active INTEGER NOT NULL DEFAULT 1,
+    session_ver INTEGER NOT NULL DEFAULT 1,
+    created_at INTEGER NOT NULL,
+    last_login INTEGER
+  )`,
   // Phones/browsers that asked for notifications.
   `CREATE TABLE IF NOT EXISTS push_subscriptions (endpoint TEXT PRIMARY KEY, created_at INTEGER NOT NULL)`,
   `CREATE INDEX IF NOT EXISTS idx_posts_due ON posts (status, scheduled_at)`,

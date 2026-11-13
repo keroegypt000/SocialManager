@@ -1,4 +1,5 @@
-import { checkPassword, sessionCookie, clearCookie, isAuthed } from './auth.js';
+import { checkPassword, sessionCookie, clearCookie, currentUser, hashPassword, verifyPassword, memberFromRow, PERMS } from './auth.js';
+import { authorize, Forbidden, clientFilter } from './access.js';
 import { metaConfigured, readPending, savePending, mediaOf } from './meta.js';
 import { startVideo, putChunk, finishVideo, videoExists, MediaError } from './media.js';
 import { createInvite, revokeInvites } from './invite.js';
@@ -128,12 +129,18 @@ async function route(req, env, url) {
 
   // --- public routes ---
   if (path === '/login' && method === 'POST') {
-    const { password } = await body(req);
-    if (!(await checkPassword(env, password))) {
-      await new Promise((r) => setTimeout(r, 800)); // slow down guessing
-      throw new HttpError(401, 'كلمة السر غلط');
+    const { username, password } = await body(req);
+    const uname = String(username || '').trim();
+    const slow = () => new Promise((r) => setTimeout(r, 800)); // slow down guessing
+    // The owner: no username (or "admin") + ADMIN_PASSWORD.
+    if (!uname || uname.toLowerCase() === 'admin') {
+      if (!(await checkPassword(env, password))) { await slow(); throw new HttpError(401, 'كلمة السر غلط'); }
+      return json({ ok: true }, 200, { 'Set-Cookie': await sessionCookie(env, 0, 0) });
     }
-    return json({ ok: true }, 200, { 'Set-Cookie': await sessionCookie(env) });
+    const u = await db.prepare('SELECT * FROM users WHERE username = ? AND active = 1').bind(uname).first();
+    if (!u || !(await verifyPassword(password, u.pass_hash))) { await slow(); throw new HttpError(401, 'اسم المستخدم أو كلمة السر غلط'); }
+    await db.prepare('UPDATE users SET last_login = ? WHERE id = ?').bind(Date.now(), u.id).run();
+    return json({ ok: true }, 200, { 'Set-Cookie': await sessionCookie(env, u.id, u.session_ver) });
   }
   if (path === '/logout' && method === 'POST') {
     return json({ ok: true }, 200, { 'Set-Cookie': clearCookie() });
@@ -149,23 +156,34 @@ async function route(req, env, url) {
     } catch (err) { bad(err.message); }
   }
 
-  if (!(await isAuthed(req, env))) throw new HttpError(401, 'سجّل الدخول الأول');
+  const user = await currentUser(req, env);
+  if (!user) throw new HttpError(401, 'سجّل الدخول الأول');
+  try {
+    await authorize(env, user, req, path, method);
+  } catch (err) {
+    if (err instanceof Forbidden) throw new HttpError(403, err.message);
+    throw err;
+  }
+  const scope = (column) => clientFilter(user, column); // SQL: only this user's clients
 
   // --- authenticated routes ---
   if (path === '/me') {
-    return json({ ok: true, metaConfigured: metaConfigured(env), redirectUri: `${url.origin}/auth/meta/callback`, providers: providersStatus(env), origin: url.origin });
+    return json({
+      ok: true, metaConfigured: metaConfigured(env), redirectUri: `${url.origin}/auth/meta/callback`, providers: providersStatus(env), origin: url.origin,
+      user: { id: user.id, owner: user.owner, name: user.name, username: user.username, perms: user.perms, clients: user.clients },
+    });
   }
 
   if (path === '/stats') {
     const monthAgo = Date.now() - 30 * 86400000;
     const [counts, upcoming] = await db.batch([
       db.prepare(`SELECT
-        (SELECT COUNT(*) FROM clients) AS clients,
-        (SELECT COUNT(*) FROM accounts) AS accounts,
-        (SELECT COUNT(*) FROM posts WHERE status = 'scheduled') AS scheduled,
-        (SELECT COUNT(*) FROM posts WHERE status = 'published' AND COALESCE(scheduled_at, created_at) >= ?) AS published30,
-        (SELECT COUNT(*) FROM posts WHERE status IN ('failed', 'partial')) AS failed`).bind(monthAgo),
-      db.prepare(`${POST_SELECT} WHERE p.status = 'scheduled' ORDER BY p.scheduled_at LIMIT 6`),
+        (SELECT COUNT(*) FROM clients WHERE ${scope('id')}) AS clients,
+        (SELECT COUNT(*) FROM accounts WHERE ${scope('client_id')}) AS accounts,
+        (SELECT COUNT(*) FROM posts WHERE status = 'scheduled' AND ${scope('client_id')}) AS scheduled,
+        (SELECT COUNT(*) FROM posts WHERE status = 'published' AND COALESCE(scheduled_at, created_at) >= ? AND ${scope('client_id')}) AS published30,
+        (SELECT COUNT(*) FROM posts WHERE status IN ('failed', 'partial') AND ${scope('client_id')}) AS failed`).bind(monthAgo),
+      db.prepare(`${POST_SELECT} WHERE p.status = 'scheduled' AND ${scope('p.client_id')} ORDER BY p.scheduled_at LIMIT 6`),
     ]);
     return json({ ...counts.results[0], upcoming: upcoming.results.map(parsePost) });
   }
@@ -174,7 +192,7 @@ async function route(req, env, url) {
   if (path === '/clients' && method === 'GET') {
     const { results } = await db.prepare(
       `SELECT c.*, (SELECT COUNT(*) FROM accounts a WHERE a.client_id = c.id) AS account_count
-       FROM clients c ORDER BY c.name`
+       FROM clients c WHERE ${scope('c.id')} ORDER BY c.name`
     ).all();
     return json(results);
   }
@@ -197,6 +215,68 @@ async function route(req, env, url) {
     const { results: gone } = await db.prepare('SELECT platform, external_id FROM accounts WHERE client_id = ?').bind(m[1]).all();
     await db.prepare('DELETE FROM clients WHERE id = ?').bind(m[1]).run();
     await ignoreKeys(env, gone.map((a) => `${a.platform}:${a.external_id}`));
+    return json({ ok: true });
+  }
+
+  // ---------- team members (owner only) ----------
+  if (path === '/users' && method === 'GET') {
+    const { results } = await db.prepare('SELECT * FROM users ORDER BY name').all();
+    return json(results.map((r) => ({ ...memberFromRow(r), active: !!r.active, last_login: r.last_login, created_at: r.created_at, all_clients: r.clients === '"*"' })));
+  }
+  const readMember = async (b, { creating }) => {
+    const name = String(b.name || '').trim().slice(0, 60);
+    const username = String(b.username || '').trim().toLowerCase();
+    if (!name) bad('اكتب اسم الشخص');
+    if (!/^[a-z0-9._-]{3,30}$/.test(username) || username === 'admin') bad('اسم المستخدم: من 3 لـ 30 حرف إنجليزي أو رقم (من غير مسافات)، ومينفعش يكون admin');
+    if (creating || b.password) {
+      if (String(b.password || '').length < 6) bad('كلمة السر لازم تكون 6 حروف أو أكتر');
+    }
+    const perms = (Array.isArray(b.perms) ? b.perms : []).filter((p) => PERMS.includes(p));
+    let clients;
+    if (b.all_clients) clients = '"*"';
+    else {
+      const ids = [...new Set((Array.isArray(b.clients) ? b.clients : []).map(Number).filter(Number.isInteger))];
+      if (!ids.length) bad('اختار عميل واحد على الأقل');
+      clients = JSON.stringify(ids);
+    }
+    return { name, username, perms: JSON.stringify(perms), clients, password: b.password ? String(b.password) : null };
+  };
+  if (path === '/users' && method === 'POST') {
+    const u = await readMember(await body(req), { creating: true });
+    try {
+      const row = await db.prepare('INSERT INTO users (username, name, pass_hash, clients, perms, created_at) VALUES (?, ?, ?, ?, ?, ?) RETURNING id')
+        .bind(u.username, u.name, await hashPassword(u.password), u.clients, u.perms, Date.now()).first();
+      return json(row, 201);
+    } catch (err) {
+      if (/UNIQUE/i.test(err.message)) bad('اسم المستخدم ده موجود قبل كده');
+      throw err;
+    }
+  }
+  let um = path.match(/^\/users\/(\d+)$/);
+  if (um && method === 'PUT') {
+    const b = await body(req);
+    if (b.active !== undefined && Object.keys(b).length === 1) {
+      // Enable / disable only. Disabling logs them out (session_ver bump).
+      await db.prepare('UPDATE users SET active = ?, session_ver = session_ver + 1 WHERE id = ?').bind(b.active ? 1 : 0, um[1]).run();
+      return json({ ok: true });
+    }
+    const u = await readMember(b, { creating: false });
+    try {
+      if (u.password) {
+        await db.prepare('UPDATE users SET username = ?, name = ?, clients = ?, perms = ?, pass_hash = ?, session_ver = session_ver + 1 WHERE id = ?')
+          .bind(u.username, u.name, u.clients, u.perms, await hashPassword(u.password), um[1]).run();
+      } else {
+        await db.prepare('UPDATE users SET username = ?, name = ?, clients = ?, perms = ? WHERE id = ?')
+          .bind(u.username, u.name, u.clients, u.perms, um[1]).run();
+      }
+    } catch (err) {
+      if (/UNIQUE/i.test(err.message)) bad('اسم المستخدم ده موجود قبل كده');
+      throw err;
+    }
+    return json({ ok: true });
+  }
+  if (um && method === 'DELETE') {
+    await db.prepare('DELETE FROM users WHERE id = ?').bind(um[1]).run();
     return json({ ok: true });
   }
 
@@ -362,7 +442,8 @@ async function route(req, env, url) {
   }
 
   if (path === '/whatsapp/count' && method === 'GET') {
-    const r = await db.prepare("SELECT COUNT(*) AS n FROM post_targets WHERE status = 'manual'").first();
+    if (!user.owner && !user.perms.includes('whatsapp')) return json({ count: 0 });
+    const r = await db.prepare(`SELECT COUNT(*) AS n FROM post_targets pt JOIN posts p ON p.id = pt.post_id WHERE pt.status = 'manual' AND ${scope('p.client_id')}`).first();
     return json({ count: r.n });
   }
 
@@ -372,7 +453,7 @@ async function route(req, env, url) {
         CASE WHEN a.token_enc = '${GATEWAY}' THEN 1 ELSE 0 END AS auto,
         c.name AS client_name, c.color AS client_color
       FROM post_targets pt JOIN posts p ON p.id = pt.post_id JOIN accounts a ON a.id = pt.account_id JOIN clients c ON c.id = p.client_id
-      WHERE a.platform = 'whatsapp'`;
+      WHERE a.platform = 'whatsapp' AND ${scope('p.client_id')}`;
     const week = Date.now() - 7 * 86400000;
     const [ready, upcoming, published, failed, accounts] = await db.batch([
       db.prepare(`${sel} AND pt.status = 'manual' ORDER BY COALESCE(p.scheduled_at, p.created_at)`),
@@ -382,7 +463,7 @@ async function route(req, env, url) {
       db.prepare(`${sel} AND pt.status = 'failed' AND COALESCE(p.scheduled_at, p.created_at) >= ? ORDER BY COALESCE(p.scheduled_at, p.created_at) DESC LIMIT 20`).bind(week),
       db.prepare(`SELECT a.id, a.name, c.name AS client_name, c.color AS client_color,
           CASE WHEN a.token_enc = '${GATEWAY}' THEN 1 ELSE 0 END AS auto
-        FROM accounts a JOIN clients c ON c.id = a.client_id WHERE a.platform = 'whatsapp' ORDER BY c.name, a.name`),
+        FROM accounts a JOIN clients c ON c.id = a.client_id WHERE a.platform = 'whatsapp' AND ${scope('a.client_id')} ORDER BY c.name, a.name`),
     ]);
     const shape = (r) => ({ ...r, media: mediaOf(r) });
     return json({
@@ -419,7 +500,7 @@ async function route(req, env, url) {
     const clientId = url.searchParams.get('client_id');
     const sql = `SELECT id, client_id, platform, external_id, name, picture, created_at,
       CASE WHEN platform = 'whatsapp' AND token_enc = '${GATEWAY}' THEN 1 ELSE 0 END AS auto FROM accounts
-      ${clientId ? 'WHERE client_id = ?' : ''} ORDER BY platform, name`;
+      WHERE ${scope('client_id')} ${clientId ? 'AND client_id = ?' : ''} ORDER BY platform, name`;
     const stmt = clientId ? db.prepare(sql).bind(clientId) : db.prepare(sql);
     return json((await stmt.all()).results);
   }
@@ -449,7 +530,7 @@ async function route(req, env, url) {
   // Posts list. Tabs: upcoming (soonest first) / done / attention / drafts / all,
   // plus client, platform, text and date-range filters.
   if ((path === '/posts' || path === '/posts/counts') && method === 'GET') {
-    const where = [];
+    const where = [scope('p.client_id')];
     const args = [];
     const q = url.searchParams;
     if (q.get('client_id')) { where.push('p.client_id = ?'); args.push(q.get('client_id')); }
