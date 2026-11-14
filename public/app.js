@@ -1453,6 +1453,17 @@ async function renderCompose(main, params) {
   };
   const uploadVideo = async (file) => {
     const info = await videoInfo(file);
+    // Browser-made (fragmented) MP4s say "0 seconds" in their header, and Facebook then
+    // shows a frozen first frame. Rebuild them as a normal MP4 first (no re-encoding).
+    if (window.fixMp4) {
+      try {
+        progress('بيجهّز الفيديو', 0);
+        const fx = await window.fixMp4(file);
+        if (fx.fixed) file = fx.file;
+      } catch (err) {
+        console.warn('mp4 fix skipped', err);
+      }
+    }
     const type = file.type || (file.name.toLowerCase().endsWith('.mov') ? 'video/quicktime' : 'video/mp4');
     const start = await api('/media/video', { method: 'POST', body: { size: file.size, type } });
     for (let i = 0; i < start.chunks; i++) {

@@ -5,7 +5,8 @@
 (function () {
   'use strict';
 
-  const SIZES = { '9:16': [720, 1280], '1:1': [1080, 1080], '16:9': [1280, 720], '4:5': [864, 1080] };
+  // Full HD: what Facebook / Instagram recommend for Stories and Reels.
+  const SIZES = { '9:16': [1080, 1920], '1:1': [1080, 1080], '16:9': [1920, 1080], '4:5': [1080, 1350] };
   const FPS = 30;
   const FADE = 0.6; // seconds of crossfade between photos
 
@@ -260,7 +261,8 @@
     const stream = new MediaStream([...canvas.captureStream(FPS).getVideoTracks(), ...dest.stream.getAudioTracks()]);
     const mime = pickMime();
     if (!mime) throw new Error('المتصفح ده مش بيعرف يعمل فيديو. استخدم Chrome.');
-    const rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 4_000_000, audioBitsPerSecond: 128_000 });
+    // A keyframe every 2 seconds (Facebook asks for 2-5 s); browsers that don't know the option ignore it.
+    const rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 6_000_000, audioBitsPerSecond: 128_000, videoKeyFrameIntervalDuration: 2000 });
     const chunks = [];
     rec.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
     const done = new Promise((r) => { rec.onstop = r; });
