@@ -2,7 +2,7 @@
 // demand — what the platform itself reports about it (link, status, video length),
 // so problems like a broken video can be seen from inside the platform.
 import { decrypt } from './crypto.js';
-import { graph, mediaOf, facebookVideoStatus } from './meta.js';
+import { graph, mediaOf, facebookVideoStatus, formatOf } from './meta.js';
 
 const DAY = 86400000;
 
@@ -14,25 +14,27 @@ export async function listContent(env, { scope, platform, clientId, days, allowe
   if (allowedPlatforms) where.push(`a.platform IN (${allowedPlatforms.map((x) => `'${x}'`).join(',')})`);
   const { results } = await env.DB.prepare(
     `SELECT pt.id AS target_id, pt.status AS target_status, pt.error, pt.external_post_id,
-        p.id AS post_id, p.message, p.image_url, p.media, p.fb_reel, p.media_cleaned, p.status AS post_status,
+        p.id AS post_id, p.message, p.image_url, p.media, p.fb_reel, p.formats, p.media_cleaned, p.status AS post_status,
         p.scheduled_at, p.created_at, a.platform, a.name AS account_name, c.name AS client_name, c.color AS client_color
      FROM post_targets pt JOIN posts p ON p.id = pt.post_id JOIN accounts a ON a.id = pt.account_id JOIN clients c ON c.id = p.client_id
      WHERE ${where.join(' AND ')}
      ORDER BY COALESCE(p.scheduled_at, p.created_at) DESC LIMIT 300`
   ).bind(...args).all();
-  return results.map((r) => ({ ...r, media: mediaOf(r) }));
+  return results.map((r) => ({ ...r, media: mediaOf(r), format: ['facebook', 'instagram'].includes(r.platform) ? formatOf(r, r.platform) : null }));
 }
 
 // Ask the platform about one published item.
 export async function liveDetails(env, targetId, scopeSql) {
   const t = await env.DB.prepare(
-    `SELECT pt.*, a.platform, a.external_id AS account_external_id, a.token_enc, p.fb_reel, p.media, p.image_url
+    `SELECT pt.*, a.platform, a.external_id AS account_external_id, a.token_enc, p.fb_reel, p.formats, p.media, p.image_url
      FROM post_targets pt JOIN accounts a ON a.id = pt.account_id JOIN posts p ON p.id = pt.post_id
      WHERE pt.id = ? AND ${scopeSql}`
   ).bind(targetId).first();
   if (!t) return { error: 'مش موجود' };
-  const id = t.external_post_id;
+  const id = String(t.external_post_id || '').split(',')[0];
   const out = { platform: t.platform, id, url: null, facts: [], warnings: [] };
+  const fmt = ['facebook', 'instagram'].includes(t.platform) ? formatOf(t, t.platform) : null;
+  if (fmt === 'story') out.facts.push('ستوري: بتفضل 24 ساعة وبعدها بتختفي لوحدها.');
   if (!id || t.status !== 'published') {
     out.facts.push(t.status === 'failed' ? `فشل: ${t.error || ''}` : `الحالة على المنصة عندنا: ${t.status}`);
     return out;

@@ -92,6 +92,8 @@ const MIGRATIONS = [
   'ALTER TABLE post_targets ADD COLUMN started_at INTEGER',
   // When "publish now" handed the post to its background job.
   'ALTER TABLE posts ADD COLUMN publish_started_at INTEGER',
+  // How each platform shows the post: JSON {"facebook":"post"|"reel"|"story", "instagram": ...}
+  'ALTER TABLE posts ADD COLUMN formats TEXT',
 ];
 
 let ready = false;

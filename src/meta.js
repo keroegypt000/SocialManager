@@ -217,14 +217,36 @@ export function mediaOf(post) {
   return post.image_url ? [{ type: 'image', url: post.image_url }] : [];
 }
 
+// How a platform shows the post: 'post' | 'reel' | 'story'.
+export function formatOf(post, platform) {
+  let f = null;
+  try { f = JSON.parse(post.formats || '{}')?.[platform]; } catch { /* old posts */ }
+  if (['post', 'reel', 'story'].includes(f)) return f;
+  return platform === 'facebook' && post.fb_reel ? 'reel' : 'post';
+}
+
 // ---------- Facebook ----------
 export async function publishFacebook(env, pageId, token, post) {
   const media = mediaOf(post);
   const video = media.find((m) => m.type === 'video');
   const images = media.filter((m) => m.type === 'image');
   const text = post.message || '';
+  const fmt = formatOf(post, 'facebook');
 
-  if (video) return post.fb_reel ? publishFacebookReel(env, pageId, token, video.url, text) : publishFacebookVideo(env, pageId, token, video.url, text);
+  if (fmt === 'story') {
+    if (!media.length) throw new Error('ستوري فيسبوك محتاج صورة أو فيديو');
+    if (video) return publishFacebookVideoStory(env, pageId, token, video.url);
+    // Every photo becomes its own story.
+    const ids = [];
+    for (const img of images) {
+      const ph = await graph(env, `${pageId}/photos`, { method: 'POST', params: { url: img.url, published: 'false', access_token: token } });
+      const s = await graph(env, `${pageId}/photo_stories`, { method: 'POST', params: { photo_id: ph.id, access_token: token } });
+      ids.push(s.post_id || ph.id);
+    }
+    return ids.join(',');
+  }
+
+  if (video) return fmt === 'reel' ? publishFacebookReel(env, pageId, token, video.url, text) : publishFacebookVideo(env, pageId, token, video.url, text);
 
   if (images.length > 1) {
     // Album: upload each photo unpublished, then one post that attaches them all.
@@ -267,7 +289,24 @@ export async function facebookVideoStatus(env, videoId, token) {
 }
 
 async function publishFacebookReel(env, pageId, token, url, text) {
-  const start = await graph(env, `${pageId}/video_reels`, { method: 'POST', params: { upload_phase: 'start', access_token: token } });
+  const videoId = await uploadFacebookVideo(env, pageId, token, url, 'video_reels');
+  await graph(env, `${pageId}/video_reels`, {
+    method: 'POST',
+    params: { upload_phase: 'finish', video_id: videoId, video_state: 'PUBLISHED', description: text, access_token: token },
+  });
+  return videoId;
+}
+
+// Page story with a video: same upload as Reels, on the video_stories edge.
+async function publishFacebookVideoStory(env, pageId, token, url) {
+  const videoId = await uploadFacebookVideo(env, pageId, token, url, 'video_stories');
+  await graph(env, `${pageId}/video_stories`, { method: 'POST', params: { upload_phase: 'finish', video_id: videoId, access_token: token } });
+  return videoId;
+}
+
+// start -> upload the bytes -> wait until Facebook has the whole file. Returns the video id.
+async function uploadFacebookVideo(env, pageId, token, url, edge) {
+  const start = await graph(env, `${pageId}/${edge}`, { method: 'POST', params: { upload_phase: 'start', access_token: token } });
   const base = env.META_RUPLOAD_BASE || 'https://rupload.facebook.com';
   const target = `${base}/video-upload/${version(env)}/${start.video_id}`;
   const video = await openVideo(env, url);
@@ -298,10 +337,6 @@ async function publishFacebookReel(env, pageId, token, url, text) {
     if (st?.uploading_phase?.status === 'complete' || ['upload_complete', 'processing', 'ready'].includes(vs)) break;
     await sleepMs(3000);
   }
-  await graph(env, `${pageId}/video_reels`, {
-    method: 'POST',
-    params: { upload_phase: 'finish', video_id: start.video_id, video_state: 'PUBLISHED', description: text, access_token: token },
-  });
   return start.video_id;
 }
 
@@ -336,6 +371,24 @@ export async function publishInstagram(env, igId, token, post) {
   const images = media.filter((m) => m.type === 'image');
   const caption = post.message || '';
   if (!media.length) throw new Error('إنستجرام محتاج صورة أو فيديو.');
+  const fmt = formatOf(post, 'instagram');
+
+  if (fmt === 'story') {
+    // Stories have no caption. A video is one story; every photo is its own story.
+    if (video) {
+      const c = await graph(env, `${igId}/media`, { method: 'POST', params: { media_type: 'STORIES', video_url: video.url, access_token: token } });
+      const state = await waitForContainer(env, c.id, token, 6, 4000);
+      if (state !== 'FINISHED') return { pending: c.id };
+      return finishInstagram(env, igId, token, c.id);
+    }
+    const ids = [];
+    for (const img of images) {
+      const c = await graph(env, `${igId}/media`, { method: 'POST', params: { media_type: 'STORIES', image_url: img.url, access_token: token } });
+      if ((await waitForContainer(env, c.id, token, 8, 1500)) !== 'FINISHED') throw new Error('إنستجرام اتأخر في تجهيز الستوري، جرّب تاني');
+      ids.push(await finishInstagram(env, igId, token, c.id));
+    }
+    return ids.join(',');
+  }
 
   if (video) {
     const c = await graph(env, `${igId}/media`, {

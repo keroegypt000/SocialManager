@@ -260,7 +260,7 @@
     const stream = new MediaStream([...canvas.captureStream(FPS).getVideoTracks(), ...dest.stream.getAudioTracks()]);
     const mime = pickMime();
     if (!mime) throw new Error('المتصفح ده مش بيعرف يعمل فيديو. استخدم Chrome.');
-    const rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 6_000_000, audioBitsPerSecond: 128_000 });
+    const rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 4_000_000, audioBitsPerSecond: 128_000 });
     const chunks = [];
     rec.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
     const done = new Promise((r) => { rec.onstop = r; });
@@ -319,8 +319,10 @@
         <div><label>المقاس</label><select name="size">
           <option value="9:16">📱 طولي 9:16 (ريلز / ستوري / حالة)</option><option value="4:5">4:5 (بوست إنستجرام)</option>
           <option value="1:1">⬛ مربع 1:1</option><option value="16:9">🖥️ عرضي 16:9</option></select></div>
-        <div><label>كل صورة كام ثانية</label><select name="per">
-          <option value="2">2</option><option value="3" selected>3</option><option value="4">4</option><option value="5">5</option></select></div>
+        <div><label>مدة الفيديو كله</label><select name="total">
+          <option value="auto" selected>حسب الصور (3 ثواني للصورة)</option>
+          <option value="10">10 ثواني</option><option value="15">15 ثانية</option><option value="20">20 ثانية</option>
+          <option value="30">30 ثانية</option><option value="45">45 ثانية</option><option value="60">دقيقة كاملة</option></select></div>
         <div><label>الحركة</label><select name="motion"><option value="zoom">🔍 زووم هادي</option><option value="none">من غير حركة</option></select></div>
       </div>
       <div class="field"><label>الصورة تظهر إزاي</label><select name="fit">
@@ -336,7 +338,7 @@
           <input type="file" name="musicFile" accept="audio/*" style="max-width:170px"></label>
       </div>
       <div class="row"><div><label>علو الصوت</label><input name="volume" type="range" min="0.1" max="1" step="0.05" value="0.8"></div></div>
-      <div class="notice small" style="margin:0">⏱️ عمل الفيديو بياخد قد مدته تقريباً. خلّي الصفحة مفتوحة لحد ما يخلص.</div>
+      <div class="notice small" style="margin:0">⏱️ عمل الفيديو بياخد قد مدته تقريباً (دقيقة فيديو = حوالي دقيقة). خلّي الصفحة مفتوحة لحد ما يخلص.</div>
       <div class="progress" id="vm-progress" hidden><div></div><span></span></div>
       <div id="vm-err" class="notice bad" hidden></div>
       <div class="dlg-actions"><button type="button" class="btn primary" data-go disabled>🎬 اعمل الفيديو</button></div>
@@ -346,6 +348,12 @@
     const f = dlg.querySelector('form');
     let files = [];
     const go = dlg.querySelector('[data-go]');
+    // Seconds per photo: the chosen total split over the photos (max one minute).
+    const perPhoto = () => {
+      const t = f.elements.total.value;
+      const per = t === 'auto' ? 3 : Number(t) / Math.max(1, files.length);
+      return Math.min(per, 60 / Math.max(1, files.length));
+    };
     const err = (m) => { const b = dlg.querySelector('#vm-err'); b.textContent = m || ''; b.hidden = !m; };
 
     dlg.querySelector('#vm-files').onchange = (e) => {
@@ -353,10 +361,10 @@
       dlg.querySelector('#vm-thumbs').innerHTML = files.map((x, i) => `<div class="vm-thumb"><img src="${URL.createObjectURL(x)}" alt=""><span>${i + 1}</span></div>`).join('');
       dlg.querySelector('#vm-files-text').textContent = files.length ? `✅ ${files.length} صور — دوس تاني عشان تغيّرهم` : '📷 اختار من 2 لـ 10 صور';
       go.disabled = files.length < 1;
-      const total = files.length * Number(f.elements.per.value);
-      go.textContent = files.length ? `🎬 اعمل الفيديو (${total} ثانية)` : '🎬 اعمل الفيديو';
+      const total = Math.round(files.length * perPhoto());
+      go.textContent = files.length ? `🎬 اعمل الفيديو (${total} ثانية · ${perPhoto().toFixed(1).replace('.0', '')} ث للصورة)` : '🎬 اعمل الفيديو';
     };
-    f.elements.per.onchange = () => dlg.querySelector('#vm-files').onchange({ target: { files } });
+    f.elements.total.onchange = () => dlg.querySelector('#vm-files').onchange({ target: { files } });
     dlg.querySelectorAll('[data-preview]').forEach((b) => {
       b.onclick = async () => {
         b.disabled = true;
@@ -369,7 +377,7 @@
       const music = f.elements.music.value;
       const musicFile = f.elements.musicFile.files[0];
       if (music === 'file' && !musicFile) return err('اختار ملف الموسيقى من جهازك');
-      if (files.length * Number(f.elements.per.value) < 3) return err('الفيديو لازم يكون 3 ثواني على الأقل: زوّد الصور أو المدة');
+      if (files.length * perPhoto() < 3) return err('الفيديو لازم يكون 3 ثواني على الأقل: زوّد الصور أو المدة');
       err('');
       stopPreview();
       go.disabled = true;
@@ -378,7 +386,7 @@
       const setP = (p) => { bar.querySelector('div').style.width = `${Math.round(p * 100)}%`; bar.querySelector('span').textContent = `بيعمل الفيديو ${Math.round(p * 100)}%`; };
       try {
         const out = await render({
-          files, size: f.elements.size.value, per: Number(f.elements.per.value), motion: f.elements.motion.value,
+          files, size: f.elements.size.value, per: perPhoto(), motion: f.elements.motion.value,
           caption: f.elements.caption.value.trim(), music, musicFile, volume: Number(f.elements.volume.value), fit: f.elements.fit.value,
         }, setP);
         dlg.close();

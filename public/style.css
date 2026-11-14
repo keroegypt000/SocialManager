@@ -521,3 +521,18 @@ a.top-post[href]:hover { border-color: var(--primary); }
 .vm-music { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 6px; }
 .vm-opt { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; border: 1px solid var(--border); border-radius: 10px; padding: 6px 8px; margin: 0; font-weight: 600; cursor: pointer; }
 .vm-opt .btn { margin-inline-start: auto; padding: 2px 8px; }
+
+/* Post / Reel / Story per platform */
+.fmt-box { margin-top: 10px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; display: grid; gap: 8px; }
+.fmt-box > label { margin: 0; }
+.fmt-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.fmt-row[hidden] { display: none; }
+.fmt-row > b { min-width: 70px; }
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 999px; overflow: hidden; }
+.seg label { margin: 0; cursor: pointer; font-weight: 400; }
+.seg input { position: absolute; opacity: 0; pointer-events: none; }
+.seg span { display: block; padding: 6px 12px; white-space: nowrap; }
+.seg label + label span { border-inline-start: 1px solid var(--border); }
+.seg input:checked + span { background: var(--primary); color: #fff; }
+.seg input:disabled + span { opacity: .4; cursor: not-allowed; }
+.seg input:focus-visible + span { outline: 2px solid var(--primary); outline-offset: -2px; }

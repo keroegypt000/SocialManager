@@ -695,7 +695,7 @@ async function renderContent(main, params) {
         : `<div class="st-text">${esc((t.message || '').slice(0, 160))}</div>`;
     return `
       <div class="st-tile ${t.target_status === 'failed' ? 'failed' : ''}" data-target="${t.target_id}" data-platform="${esc(t.platform)}">
-        <div class="st-media">${body}<span class="st-badge">${esc(PLATFORM[t.platform] || t.platform)}${t.fb_reel && t.platform === 'facebook' && first?.type === 'video' ? ' · Reel' : ''}</span></div>
+        <div class="st-media">${body}<span class="st-badge">${esc(PLATFORM[t.platform] || t.platform)}${t.format ? ` · ${{ post: 'منشور', reel: 'ريلز', story: 'ستوري' }[t.format]}` : ''}</span></div>
         <div class="st-info">
           <div class="st-who"><span class="dot" style="background:${esc(t.client_color)}"></span><b>${esc(t.client_name)}</b> ${badge(t.target_status)}</div>
           <div class="muted small">${platformTag(t.platform)} ${esc(t.account_name)}</div>
@@ -1124,7 +1124,18 @@ async function renderCompose(main, params) {
             <input id="p-url" type="url" dir="ltr" placeholder="أو حط رابط صورة: https://...jpg">
             <button type="button" class="btn small" id="p-url-add">إضافة</button>
           </div>
-          <label class="pick" id="p-reel-wrap" hidden style="margin-top:8px"><input type="checkbox" id="p-reel"> انشر الفيديو كـ <b>Reel</b> على فيسبوك (لو مش متعلّم بينزل فيديو عادي)</label>
+          <div class="fmt-box" id="p-formats" hidden>
+            <label>ينزل إزاي على كل منصة</label>
+            <div class="fmt-row" data-fmt="facebook" hidden><b>فيسبوك</b><div class="seg">
+              <label><input type="radio" name="fmt-facebook" value="post" checked><span>📝 منشور</span></label>
+              <label><input type="radio" name="fmt-facebook" value="reel"><span>🎬 ريلز</span></label>
+              <label><input type="radio" name="fmt-facebook" value="story"><span>⭕ ستوري</span></label></div></div>
+            <div class="fmt-row" data-fmt="instagram" hidden><b>إنستجرام</b><div class="seg">
+              <label><input type="radio" name="fmt-instagram" value="post" checked><span>📝 منشور</span></label>
+              <label><input type="radio" name="fmt-instagram" value="reel"><span>🎬 ريلز</span></label>
+              <label><input type="radio" name="fmt-instagram" value="story"><span>⭕ ستوري</span></label></div></div>
+            <div class="muted small" id="p-fmt-hint"></div>
+          </div>
           <div class="muted small" id="p-media-hint" style="margin-top:6px"></div>
         </div>
         <div class="field">
@@ -1251,6 +1262,7 @@ async function renderCompose(main, params) {
     } else {
       box.innerHTML = `<span class="muted small">العميل ده مفيش عنده حسابات مربوطة. <a href="#/clients">اربط حساباته</a></span>`;
     }
+    box.dispatchEvent(new Event('change')); // refresh the Post / Reel / Story rows
   };
 
   async function loadAccounts() {
@@ -1268,7 +1280,34 @@ async function renderCompose(main, params) {
   const submitBtn = $('#p-submit');
   const dropIdle = '📷🎬 دوس هنا واختار صور (لحد 10 = ألبوم) أو فيديو واحد، أو اسحبهم وسيبهم هنا';
   const dropText = $('#p-drop-text');
-  if (source?.fb_reel) $('#p-reel').checked = true;
+  // --- Post / Reel / Story per platform ---
+  let srcFormats = {};
+  try { srcFormats = JSON.parse(source?.formats || '{}') || {}; } catch { /* old post */ }
+  if (!srcFormats.facebook && source?.fb_reel) srcFormats.facebook = 'reel';
+  const setFormat = (plat, v) => { const r = $(`input[name="fmt-${plat}"][value="${v}"]`); if (r) r.checked = true; };
+  const getFormat = (plat) => $(`input[name="fmt-${plat}"]:checked`)?.value || 'post';
+  for (const [p, v] of Object.entries(srcFormats)) setFormat(p, v);
+  const updateFormats = () => {
+    const hasVideo = media.some((m) => m.type === 'video');
+    const checked = new Set([...document.querySelectorAll('#p-accounts input:checked')].map((i) => i.dataset.platform));
+    let any = false;
+    const notes = [];
+    for (const plat of ['facebook', 'instagram']) {
+      const row = $(`[data-fmt="${plat}"]`);
+      row.hidden = !checked.has(plat);
+      any ||= !row.hidden;
+      const reel = row.querySelector('input[value="reel"]');
+      reel.disabled = !hasVideo;
+      reel.parentElement.title = hasVideo ? '' : 'الريلز محتاج فيديو: اعمل فيديو من الصور 🎞️';
+      if (!hasVideo && reel.checked) setFormat(plat, 'post');
+      if (!row.hidden && getFormat(plat) === 'story') notes.push(`ستوري ${plat === 'facebook' ? 'فيسبوك' : 'إنستجرام'}: بيختفي بعد 24 ساعة، ومن غير الكلام المكتوب${media.filter((m) => m.type === 'image').length > 1 ? '، وكل صورة بتنزل ستوري لوحدها' : ''}.`);
+    }
+    if (any && !hasVideo) notes.push('🎬 ريلز محتاج فيديو. دوس "اعمل فيديو من الصور" عشان تفتحه.');
+    $('#p-formats').hidden = !any;
+    $('#p-fmt-hint').textContent = notes.join(' ');
+  };
+  $('#p-formats').onchange = updateFormats;
+  $('#p-accounts').addEventListener('change', updateFormats);
 
   const renderMedia = () => {
     const box = $('#p-media');
@@ -1296,10 +1335,10 @@ async function renderCompose(main, params) {
         };
       });
     });
-    $('#p-reel-wrap').hidden = !video;
+    updateFormats();
     const hint = $('#p-media-hint');
     if (video) {
-      hint.textContent = 'إنستجرام هينزله Reel (من 3 ثواني لـ 15 دقيقة). Reel فيسبوك لازم يكون طولي (9:16) ومن 3 لـ 90 ثانية، غير كده خليه فيديو عادي. الفيديو بيتمسح من التخزين بعد النشر بأسبوع.';
+      hint.textContent = 'ريلز فيسبوك لازم يكون طولي (9:16) ومن 3 لـ 90 ثانية. الستوري لحد 60 ثانية. الفيديو بيتمسح من التخزين بعد النشر بأسبوع.';
     } else if (media.length > 1) {
       hint.textContent = `ألبوم ${media.length} صور. رتّبهم بالأسهم، والأولى هي اللي بتظهر الأول.`;
     } else {
@@ -1378,7 +1417,7 @@ async function renderCompose(main, params) {
         progress('جاري رفع الفيديو', 0);
         const v = await uploadVideo(f);
         media = [{ type: 'video', ...v }];
-        $('#p-reel').checked = v.width < v.height && v.duration <= 90;
+        if (v.width < v.height && v.duration <= 90) { setFormat('facebook', 'reel'); setFormat('instagram', 'reel'); }
       } else {
         for (let i = 0; i < images.length; i++) {
           progress(`جاري رفع الصور (${i + 1} من ${images.length})`, (i / images.length) * 100);
@@ -1520,7 +1559,7 @@ async function renderCompose(main, params) {
       account_ids: [...document.querySelectorAll('#p-accounts input:checked')].map((i) => Number(i.value)),
       message: $('#p-message').value,
       media: media.map((m) => ({ type: m.type, url: m.url })),
-      fb_reel: $('#p-reel').checked,
+      formats: { facebook: getFormat('facebook'), instagram: getFormat('instagram') },
       link: $('#p-link').value.trim() || null,
       mode: m === 'repeat' || m === 'dates' ? 'schedule' : m,
       scheduled_times: times,

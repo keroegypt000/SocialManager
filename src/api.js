@@ -73,7 +73,6 @@ async function readPostInput(env, b, { single = false, postId = 0 } = {}) {
   const media = readMedia(b);
   const imageUrl = media.find((m) => m.type === 'image')?.url || null;
   const hasVideo = media.some((m) => m.type === 'video');
-  const fbReel = hasVideo && Boolean(b.fb_reel);
   const link = cleanUrl(b.link);
   const mode = b.mode; // 'now' | 'schedule' | 'draft'
   if (!clientId) bad('اختار العميل');
@@ -103,6 +102,17 @@ async function readPostInput(env, b, { single = false, postId = 0 } = {}) {
   if (!hasVideo && (picked.has('youtube') || picked.has('tiktok'))) bad(`${picked.has('youtube') ? 'يوتيوب' : 'تيك توك'} محتاج فيديو مرفوع على المنصة. ارفع فيديو أو شيل الحساب ده.`);
   if (hasVideo && picked.has('linkedin')) bad('لينكدإن: نشر الفيديو من المنصة لسه مش متاح. شيل لينكدإن أو استخدم صور.');
   if (picked.has('meta_ads')) bad('حسابات الإعلانات مش بتتنشر عليها منشورات');
+  // Post / Reel / Story per platform.
+  const formats = {};
+  const NAMES = { facebook: 'فيسبوك', instagram: 'إنستجرام' };
+  for (const p of ['facebook', 'instagram']) {
+    const f = b.formats?.[p];
+    formats[p] = ['post', 'reel', 'story'].includes(f) ? f : p === 'facebook' && b.fb_reel && hasVideo ? 'reel' : 'post';
+    if (!picked.has(p)) continue;
+    if (formats[p] === 'reel' && !hasVideo) bad(`ريلز ${NAMES[p]} محتاج فيديو. اعمل فيديو من الصور 🎞️ أو اختار "منشور".`);
+    if (formats[p] === 'story' && !media.length) bad(`ستوري ${NAMES[p]} محتاج صورة أو فيديو.`);
+  }
+  const fbReel = formats.facebook === 'reel';
   if (picked.has('whatsapp') && mode !== 'draft') {
     try {
       await checkWaLimit(env, owned.results.filter((a) => a.platform === 'whatsapp'), mode === 'now' ? [Date.now()] : times, postId);
@@ -112,7 +122,7 @@ async function readPostInput(env, b, { single = false, postId = 0 } = {}) {
     }
   }
 
-  return { clientId, accountIds, message, imageUrl, media: media.length ? JSON.stringify(media) : null, fbReel: fbReel ? 1 : 0, link, mode, times };
+  return { clientId, accountIds, message, imageUrl, media: media.length ? JSON.stringify(media) : null, fbReel: fbReel ? 1 : 0, formats: JSON.stringify(formats), link, mode, times };
 }
 
 export async function handleApi(req, env, url) {
@@ -604,8 +614,8 @@ async function route(req, env, url) {
     for (let i = 0; i < slots.length; i += 50) {
       const chunk = slots.slice(i, i + 50);
       const res = await db.batch(chunk.map((at) => db.prepare(
-        'INSERT INTO posts (client_id, message, image_url, media, fb_reel, link, scheduled_at, status, created_at, series_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id'
-      ).bind(input.clientId, input.message, input.imageUrl, input.media, input.fbReel, input.link, at, status, now, seriesId)));
+        'INSERT INTO posts (client_id, message, image_url, media, fb_reel, formats, link, scheduled_at, status, created_at, series_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id'
+      ).bind(input.clientId, input.message, input.imageUrl, input.media, input.fbReel, input.formats, input.link, at, status, now, seriesId)));
       ids.push(...res.map((r) => r.results[0].id));
     }
     const targetStmts = ids.flatMap((pid) => input.accountIds.map((aid) =>
@@ -667,8 +677,8 @@ async function route(req, env, url) {
       if (md.type === 'video' && !(await videoExists(env, md.url))) bad('الفيديو بتاع المنشور ده اتمسح من التخزين (بيتمسح بعد النشر بأسبوع). استخدم "نسخ وتكرار" وارفعه تاني.');
     }
     const copy = await db.prepare(
-      "INSERT INTO posts (client_id, message, image_url, media, fb_reel, link, scheduled_at, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'scheduled', ?) RETURNING id"
-    ).bind(src.client_id, src.message, src.image_url, src.media, src.fb_reel || 0, src.link, at, Date.now()).first();
+      "INSERT INTO posts (client_id, message, image_url, media, fb_reel, formats, link, scheduled_at, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'scheduled', ?) RETURNING id"
+    ).bind(src.client_id, src.message, src.image_url, src.media, src.fb_reel || 0, src.formats || null, src.link, at, Date.now()).first();
     await db.batch(targets.map((t) => db.prepare('INSERT INTO post_targets (post_id, account_id) VALUES (?, ?)').bind(copy.id, t.account_id)));
     const saved = await db.prepare(`${POST_SELECT} WHERE p.id = ?`).bind(copy.id).first();
     return json(parsePost(saved), 201);
@@ -696,8 +706,8 @@ async function route(req, env, url) {
     const status = input.mode === 'draft' ? 'draft' : input.mode === 'now' ? 'publishing' : 'scheduled';
     const at = input.mode === 'schedule' ? input.times[0] : null;
     await db.batch([
-      db.prepare('UPDATE posts SET client_id = ?, message = ?, image_url = ?, media = ?, fb_reel = ?, link = ?, scheduled_at = ?, status = ?, media_cleaned = 0 WHERE id = ?')
-        .bind(input.clientId, input.message, input.imageUrl, input.media, input.fbReel, input.link, at, status, m[1]),
+      db.prepare('UPDATE posts SET client_id = ?, message = ?, image_url = ?, media = ?, fb_reel = ?, formats = ?, link = ?, scheduled_at = ?, status = ?, media_cleaned = 0 WHERE id = ?')
+        .bind(input.clientId, input.message, input.imageUrl, input.media, input.fbReel, input.formats, input.link, at, status, m[1]),
       db.prepare('DELETE FROM post_targets WHERE post_id = ?').bind(m[1]),
       ...input.accountIds.map((aid) => db.prepare('INSERT INTO post_targets (post_id, account_id) VALUES (?, ?)').bind(m[1], aid)),
     ]);
