@@ -89,6 +89,7 @@ export function memberFromRow(row) {
   return {
     id: row.id, owner: false, name: row.name, username: row.username,
     clients: clients === '*' ? null : clients.map(Number), perms: perms.filter((p) => PERMS.includes(p)),
+    default_client: row.default_client || null,
   };
 }
 

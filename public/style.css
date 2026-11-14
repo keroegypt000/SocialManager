@@ -536,3 +536,18 @@ a.top-post[href]:hover { border-color: var(--primary); }
 .seg input:checked + span { background: var(--primary); color: #fff; }
 .seg input:disabled + span { opacity: .4; cursor: not-allowed; }
 .seg input:focus-visible + span { outline: 2px solid var(--primary); outline-offset: -2px; }
+
+/* Client first: picker before a new post, banner inside the form */
+.client-picker { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }
+.cp-tile { display: flex; align-items: center; gap: 10px; padding: 16px; border: 1px solid var(--border); border-inline-start: 6px solid var(--cc); border-radius: 12px; background: var(--card, var(--bg)); color: inherit; text-decoration: none; font-weight: 600; min-height: 56px; }
+.cp-tile:hover, .cp-tile:focus-visible { border-color: var(--cc); box-shadow: 0 0 0 2px var(--cc) inset; }
+.cp-tile.default { order: -1; box-shadow: 0 0 0 2px var(--cc) inset; }
+.cp-tile[hidden] { display: none; }
+.cp-dot { width: 14px; height: 14px; border-radius: 50%; background: var(--cc); flex: none; }
+.cp-name { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.client-banner { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 12px 14px; margin-bottom: 14px; border-radius: 10px;
+  border: 1px solid var(--border); border-inline-start: 6px solid var(--cc); background: color-mix(in srgb, var(--cc) 10%, transparent); }
+.client-banner .cb-text { flex: 1; font-size: 1.05rem; }
+.client-banner select { flex-basis: 100%; }
+.owner-default { margin: 12px 0; }
+.owner-default label { display: block; margin-bottom: 6px; }

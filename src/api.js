@@ -191,7 +191,12 @@ async function route(req, env, url) {
   if (path === '/me') {
     return json({
       ok: true, metaConfigured: metaConfigured(env), redirectUri: `${url.origin}/auth/meta/callback`, providers: providersStatus(env), origin: url.origin,
-      user: { id: user.id, owner: user.owner, name: user.name, username: user.username, perms: user.perms, clients: user.clients },
+      user: {
+        id: user.id, owner: user.owner, name: user.name, username: user.username, perms: user.perms, clients: user.clients,
+        default_client: user.owner
+          ? Number((await db.prepare("SELECT value FROM settings WHERE key = 'owner_default_client'").first())?.value) || null
+          : user.default_client,
+      },
     });
   }
 
@@ -284,18 +289,27 @@ async function route(req, env, url) {
       if (!ids.length) bad('اختار عميل واحد على الأقل');
       clients = JSON.stringify(ids);
     }
-    return { name, username, perms: JSON.stringify(perms), clients, password: b.password ? String(b.password) : null };
+    const defaultClient = Number(b.default_client) || null;
+    if (defaultClient && clients !== '"*"' && !JSON.parse(clients).includes(defaultClient)) bad('العميل الافتراضي لازم يكون من العملاء اللي يشوفهم');
+    return { name, username, perms: JSON.stringify(perms), clients, defaultClient, password: b.password ? String(b.password) : null };
   };
   if (path === '/users' && method === 'POST') {
     const u = await readMember(await body(req), { creating: true });
     try {
-      const row = await db.prepare('INSERT INTO users (username, name, pass_hash, clients, perms, created_at) VALUES (?, ?, ?, ?, ?, ?) RETURNING id')
-        .bind(u.username, u.name, await hashPassword(u.password), u.clients, u.perms, Date.now()).first();
+      const row = await db.prepare('INSERT INTO users (username, name, pass_hash, clients, perms, default_client, created_at) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id')
+        .bind(u.username, u.name, await hashPassword(u.password), u.clients, u.perms, u.defaultClient, Date.now()).first();
       return json(row, 201);
     } catch (err) {
       if (/UNIQUE/i.test(err.message)) bad('اسم المستخدم ده موجود قبل كده');
       throw err;
     }
+  }
+  // Your own default client (the owner has no users row).
+  if (path === '/users/owner-default' && method === 'PUT') {
+    const id = Number((await body(req)).client_id) || null;
+    if (id) await db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('owner_default_client', ?)").bind(String(id)).run();
+    else await db.prepare("DELETE FROM settings WHERE key = 'owner_default_client'").run();
+    return json({ ok: true });
   }
   let um = path.match(/^\/users\/(\d+)$/);
   if (um && method === 'PUT') {
@@ -308,11 +322,11 @@ async function route(req, env, url) {
     const u = await readMember(b, { creating: false });
     try {
       if (u.password) {
-        await db.prepare('UPDATE users SET username = ?, name = ?, clients = ?, perms = ?, pass_hash = ?, session_ver = session_ver + 1 WHERE id = ?')
-          .bind(u.username, u.name, u.clients, u.perms, await hashPassword(u.password), um[1]).run();
+        await db.prepare('UPDATE users SET username = ?, name = ?, clients = ?, perms = ?, default_client = ?, pass_hash = ?, session_ver = session_ver + 1 WHERE id = ?')
+          .bind(u.username, u.name, u.clients, u.perms, u.defaultClient, await hashPassword(u.password), um[1]).run();
       } else {
-        await db.prepare('UPDATE users SET username = ?, name = ?, clients = ?, perms = ? WHERE id = ?')
-          .bind(u.username, u.name, u.clients, u.perms, um[1]).run();
+        await db.prepare('UPDATE users SET username = ?, name = ?, clients = ?, perms = ?, default_client = ? WHERE id = ?')
+          .bind(u.username, u.name, u.clients, u.perms, u.defaultClient, um[1]).run();
       }
     } catch (err) {
       if (/UNIQUE/i.test(err.message)) bad('اسم المستخدم ده موجود قبل كده');

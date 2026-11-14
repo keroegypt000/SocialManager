@@ -810,11 +810,14 @@ async function renderUsers(main) {
     <div class="page-head"><h1>👥 الفريق والصلاحيات</h1><button class="btn primary" id="add-user">+ شخص جديد</button></div>
     <div class="notice small">كل شخص بيدخل باسم مستخدم وكلمة سر بتوعه، ويشوف <b>العملاء اللي تختارهم بس</b>، ويعمل <b>اللي تسمحله بيه بس</b>.
       إنت (صاحب الحساب) بتدخل زي ما انت: من غير اسم مستخدم، بكلمة السر بتاعتك. ربط الحسابات وإضافة العملاء والفريق ليك انت بس.</div>
+    <div class="card owner-default"><label for="own-default">⭐ العميل الافتراضي بتاعك <span class="muted small">(بيتختار لوحده لما تعمل منشور جديد)</span></label>
+      <select id="own-default"><option value="">مفيش، اختار كل مرة</option>${clients.map((c) => `<option value="${c.id}" ${me?.user?.default_client === c.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select></div>
     ${users.length ? `<div class="grid users-grid">${users.map((u) => `
       <div class="card user-card ${u.active ? '' : 'off'}">
         <div class="client-head"><h2>${esc(u.name)}</h2>${u.active ? '' : '<span class="badge failed">موقوف</span>'}</div>
         <div class="muted small" dir="ltr" style="text-align:end">@${esc(u.username)}</div>
         <div class="small"><b>العملاء:</b> ${u.all_clients ? 'كل العملاء' : (u.clients || []).map((id) => esc(clientName(id))).join('، ') || '—'}</div>
+        <div class="small"><b>⭐ الافتراضي:</b> ${u.default_client ? esc(clientName(u.default_client)) : '<span class="muted">مفيش (بيختار كل مرة)</span>'}</div>
         <div class="user-perms">${u.perms.length ? u.perms.map((p) => `<span class="badge published">${esc(PERM_LABELS[p]?.[0] || p)}</span>`).join(' ') : '<span class="muted small">مفيش صلاحيات</span>'}</div>
         <div class="muted small">آخر دخول: ${u.last_login ? esc(fmtDate(u.last_login)) : 'لسه مدخلش'}</div>
         <div class="wa-actions">
@@ -826,6 +829,11 @@ async function renderUsers(main) {
       : '<div class="card empty">لسه مفيش حد في الفريق. دوس <b>+ شخص جديد</b>.</div>'}`;
 
   const reload = () => renderUsers(main);
+  $('#own-default').onchange = async (e) => {
+    await api('/users/owner-default', { method: 'PUT', body: { client_id: Number(e.target.value) || null } });
+    if (me?.user) me.user.default_client = Number(e.target.value) || null;
+    toast('اتحفظ ✅');
+  };
   $('#add-user').onclick = () => openUserDialog(null, clients, reload);
   main.querySelectorAll('[data-edit]').forEach((b) => { b.onclick = () => openUserDialog(users.find((u) => String(u.id) === b.dataset.edit), clients, reload); });
   main.querySelectorAll('[data-toggle]').forEach((b) => {
@@ -865,6 +873,8 @@ function openUserDialog(user, clients, done) {
     <div class="pick-list" data-clients ${user?.all_clients ? 'hidden' : ''}>${clients.map((c) => `
       <label class="check"><input type="checkbox" name="client" value="${c.id}" ${has(c.id) ? 'checked' : ''}>
         <span class="dot" style="background:${esc(c.color)}"></span> ${esc(c.name)}</label>`).join('')}</div>
+    <div class="field" style="margin-top:8px"><label>⭐ العميل الافتراضي <span class="muted small">(بيتختار لوحده لما يعمل منشور جديد، ويقدر يغيّره)</span></label>
+      <select name="default_client"><option value="">مفيش، يختار كل مرة</option>${clients.map((c) => `<option value="${c.id}" ${user?.default_client === c.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select></div>
     <label style="margin-top:8px">يقدر يعمل إيه</label>
     <div class="pick-list">${Object.entries(PERM_LABELS).map(([k, [l, hint]]) => `
       <label class="check"><input type="checkbox" name="perm" value="${k}" ${(user ? user.perms.includes(k) : k === 'posts') ? 'checked' : ''}>
@@ -887,6 +897,7 @@ function openUserDialog(user, clients, done) {
       all_clients: f.elements.all.checked,
       clients: [...f.querySelectorAll('[name=client]:checked')].map((x) => Number(x.value)),
       perms: [...f.querySelectorAll('[name=perm]:checked')].map((x) => x.value),
+      default_client: Number(f.elements.default_client.value) || null,
     };
     e.target.disabled = true;
     try {
@@ -1069,6 +1080,32 @@ function repeatTimes({ freq, interval, start, times, weekdays, endType, count, u
   return out;
 }
 
+// "منشور جديد ← لمين؟": choose the client before anything else.
+function renderClientPicker(main, clients, defaultId, params) {
+  const rest = new URLSearchParams(params);
+  rest.delete('client');
+  const link = (id) => { const q = new URLSearchParams(rest); q.set('client', id); return `#/compose?${q}`; };
+  const sorted = [...clients].sort((a, b) => (b.id === defaultId) - (a.id === defaultId) || a.name.localeCompare(b.name, 'ar'));
+  main.innerHTML = `
+    <div class="page-head"><h1>منشور جديد: لمين؟</h1></div>
+    <p class="muted small" style="margin-top:-6px">اختار العميل الأول، وبعدها هتظهرلك حساباته هو بس.</p>
+    ${clients.length > 8 ? '<input id="cp-search" type="search" placeholder="🔍 دوّر على عميل…" style="margin-bottom:12px">' : ''}
+    <div class="client-picker">${sorted.map((c) => `
+      <a class="cp-tile ${c.id === defaultId ? 'default' : ''}" href="${link(c.id)}" data-name="${esc(c.name.toLowerCase())}" style="--cc:${esc(c.color)}">
+        <span class="cp-dot"></span>
+        <span class="cp-name">${esc(c.name)}</span>
+        ${c.id === defaultId ? '<span class="badge published">⭐ الافتراضي</span>' : ''}
+      </a>`).join('')}</div>`;
+  const search = main.querySelector('#cp-search');
+  if (search) {
+    search.oninput = () => {
+      const q = search.value.trim().toLowerCase();
+      main.querySelectorAll('.cp-tile').forEach((t) => { t.hidden = q && !t.dataset.name.includes(q); });
+    };
+    search.focus();
+  }
+}
+
 async function renderCompose(main, params) {
   const $ = (sel) => main.querySelector(sel); // this page's own elements only
   const clients = await loadClients();
@@ -1080,7 +1117,14 @@ async function renderCompose(main, params) {
   const copyId = params.get('copy');
   const source = editId || copyId ? await api(`/posts/${editId || copyId}`) : null;
   const isEdit = Boolean(editId);
-  const preselect = source ? source.client_id : params.get('client') || clients[0].id;
+  const myDefault = clients.find((c) => c.id === me?.user?.default_client)?.id;
+  // New post with no client yet: ask "for whom?" first, so nothing goes to the wrong page.
+  if (!source && !params.get('client') && clients.length > 1) {
+    renderClientPicker(main, clients, myDefault, params);
+    return;
+  }
+  const preselect = source ? source.client_id : params.get('client') || myDefault || clients[0].id;
+  const pre = clients.find((c) => String(c.id) === String(preselect)) || clients[0];
   const soon = Date.now() + 60 * 60 * 1000;
   // Opened from a calendar day: default to 10 AM that day (or an hour from now if that's already past).
   let firstWhen = isEdit && source.scheduled_at ? source.scheduled_at : soon;
@@ -1096,13 +1140,15 @@ async function renderCompose(main, params) {
     ${isEdit && source.series_id ? '<div class="notice">المنشور ده جزء من سلسلة متكررة. التعديل هيغيّر المنشور ده بس.</div>' : ''}
     <div class="grid compose">
       <form class="card" id="compose">
+        <div class="client-banner" id="p-client-banner" style="--cc:${esc(pre.color)}">
+          <span class="dot" style="background:var(--cc)"></span>
+          <span class="cb-text">بتنشر لـ <b id="p-client-name">${esc(pre.name)}</b></span>
+          ${clients.length > 1 ? '<button type="button" class="btn small" id="p-client-change">تغيير العميل</button>' : ''}
+          <select id="p-client" hidden>${clients.map((c) => `<option value="${c.id}" ${c.id === pre.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select>
+        </div>
         <div class="field">
           <label>هتنشر على إيه؟</label>
           <div class="modes platform-pick" id="p-platforms"></div>
-        </div>
-        <div class="field">
-          <label for="p-client">العميل</label>
-          <select id="p-client">${clients.map((c) => `<option value="${c.id}" ${String(c.id) === String(preselect) ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select>
         </div>
         <div class="field">
           <label>الحسابات</label>
@@ -1273,7 +1319,15 @@ async function renderCompose(main, params) {
     renderPlatforms();
     renderAccountList();
   }
-  clientSel.onchange = loadAccounts;
+  clientSel.onchange = () => {
+    const c = clients.find((x) => String(x.id) === clientSel.value);
+    $('#p-client-name').textContent = c?.name || '';
+    $('#p-client-banner').style.setProperty('--cc', c?.color || '#888');
+    loadAccounts();
+  };
+  if ($('#p-client-change')) {
+    $('#p-client-change').onclick = () => { clientSel.hidden = false; $('#p-client-change').hidden = true; clientSel.focus(); };
+  }
   await loadAccounts();
 
 

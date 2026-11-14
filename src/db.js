@@ -96,6 +96,8 @@ const MIGRATIONS = [
   'ALTER TABLE posts ADD COLUMN formats TEXT',
   // One target per format: the same page can get a post, a Reel and a Story.
   'ALTER TABLE post_targets ADD COLUMN format TEXT',
+  // The client picked automatically when this person writes a new post.
+  'ALTER TABLE users ADD COLUMN default_client INTEGER',
 ];
 
 let ready = false;
