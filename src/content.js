@@ -2,7 +2,7 @@
 // demand — what the platform itself reports about it (link, status, video length),
 // so problems like a broken video can be seen from inside the platform.
 import { decrypt } from './crypto.js';
-import { graph, mediaOf, facebookVideoStatus, formatOf } from './meta.js';
+import { graph, mediaOf, mediaFor, facebookVideoStatus, formatOf } from './meta.js';
 
 const DAY = 86400000;
 
@@ -13,14 +13,17 @@ export async function listContent(env, { scope, platform, clientId, days, allowe
   if (clientId) { where.push('p.client_id = ?'); args.push(Number(clientId)); }
   if (allowedPlatforms) where.push(`a.platform IN (${allowedPlatforms.map((x) => `'${x}'`).join(',')})`);
   const { results } = await env.DB.prepare(
-    `SELECT pt.id AS target_id, pt.status AS target_status, pt.error, pt.external_post_id,
+    `SELECT pt.id AS target_id, pt.status AS target_status, pt.format, pt.error, pt.external_post_id,
         p.id AS post_id, p.message, p.image_url, p.media, p.fb_reel, p.formats, p.media_cleaned, p.status AS post_status,
         p.scheduled_at, p.created_at, a.platform, a.name AS account_name, c.name AS client_name, c.color AS client_color
      FROM post_targets pt JOIN posts p ON p.id = pt.post_id JOIN accounts a ON a.id = pt.account_id JOIN clients c ON c.id = p.client_id
      WHERE ${where.join(' AND ')}
      ORDER BY COALESCE(p.scheduled_at, p.created_at) DESC LIMIT 300`
   ).bind(...args).all();
-  return results.map((r) => ({ ...r, media: mediaOf(r), format: ['facebook', 'instagram'].includes(r.platform) ? formatOf(r, r.platform) : null }));
+  return results.map((r) => {
+    const format = ['facebook', 'instagram'].includes(r.platform) ? formatOf(r, r.platform) : null;
+    return { ...r, format, media: format ? mediaFor(r, format) : mediaOf(r) };
+  });
 }
 
 // Ask the platform about one published item.
@@ -39,7 +42,7 @@ export async function liveDetails(env, targetId, scopeSql) {
     out.facts.push(t.status === 'failed' ? `فشل: ${t.error || ''}` : `الحالة على المنصة عندنا: ${t.status}`);
     return out;
   }
-  const media = mediaOf(t);
+  const media = fmt ? mediaFor(t, fmt) : mediaOf(t);
   const isVideo = media.some((m) => m.type === 'video');
   try {
     if (t.platform === 'facebook') {

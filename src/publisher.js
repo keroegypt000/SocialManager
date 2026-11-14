@@ -1,5 +1,5 @@
 import { decrypt } from './crypto.js';
-import { publishFacebook, publishInstagram, containerStatus, finishInstagram, mediaOf } from './meta.js';
+import { publishFacebook, publishInstagram, containerStatus, finishInstagram, mediaFor } from './meta.js';
 import { deleteVideo } from './media.js';
 import { notifyAll } from './push.js';
 import { EXTRA_PUBLISHERS, tiktokStatus } from './providers.js';
@@ -37,7 +37,7 @@ export async function publishPost(env, postId) {
   if (!post) throw new Error('المنشور مش موجود');
 
   const { results: targets } = await env.DB.prepare(
-    `SELECT pt.id, pt.status, a.id AS account_id, a.platform, a.external_id, a.token_enc
+    `SELECT pt.id, pt.status, pt.format, a.id AS account_id, a.platform, a.external_id, a.token_enc
      FROM post_targets pt JOIN accounts a ON a.id = pt.account_id
      WHERE pt.post_id = ?`
   ).bind(postId).all();
@@ -51,15 +51,15 @@ export async function publishPost(env, postId) {
       let result;
       if (t.platform === 'whatsapp') {
         // Linked to our gateway: posts on its own. Otherwise waits for you to share it in one tap.
-        result = t.token_enc === GATEWAY ? await publishWhatsAppStatus(env, t.account_id, post, mediaOf(post)) : { manual: true };
+        result = t.token_enc === GATEWAY ? await publishWhatsAppStatus(env, t.account_id, post, mediaFor(post, 'post')) : { manual: true };
       } else if (EXTRA_PUBLISHERS[t.platform]) {
         // YouTube / LinkedIn / TikTok manage (and refresh) their own tokens.
-        result = await EXTRA_PUBLISHERS[t.platform](env, { id: t.account_id, external_id: t.external_id, token_enc: t.token_enc }, post, mediaOf(post));
+        result = await EXTRA_PUBLISHERS[t.platform](env, { id: t.account_id, external_id: t.external_id, token_enc: t.token_enc }, post, mediaFor(post, t.platform === 'linkedin' ? 'post' : 'video'));
       } else {
         const fn = PUBLISHERS[t.platform];
         if (!fn) throw new Error('المنصة دي لسه مش مدعومة: ' + t.platform);
         const token = await decrypt(env.SESSION_SECRET, t.token_enc);
-        result = await fn(env, t.external_id, token, post);
+        result = await fn(env, t.external_id, token, { ...post, format: t.format });
       }
       if (result && result.manual) {
         await env.DB.prepare("UPDATE post_targets SET status = 'manual', error = NULL WHERE id = ?").bind(t.id).run();
@@ -151,7 +151,7 @@ export async function cleanupVideos(env) {
   ).bind(cutoff).all();
   for (const p of results) {
     let allDeleted = true;
-    for (const m of mediaOf(p).filter((x) => x.type === 'video')) {
+    for (const m of mediaFor(p, 'reel')) {
       // instr() instead of LIKE: D1 rejects long LIKE patterns.
       const inUse = await env.DB.prepare(
         `SELECT 1 FROM posts WHERE id != ? AND instr(media, ?) > 0

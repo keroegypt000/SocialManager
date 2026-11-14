@@ -94,6 +94,8 @@ const MIGRATIONS = [
   'ALTER TABLE posts ADD COLUMN publish_started_at INTEGER',
   // How each platform shows the post: JSON {"facebook":"post"|"reel"|"story", "instagram": ...}
   'ALTER TABLE posts ADD COLUMN formats TEXT',
+  // One target per format: the same page can get a post, a Reel and a Story.
+  'ALTER TABLE post_targets ADD COLUMN format TEXT',
 ];
 
 let ready = false;

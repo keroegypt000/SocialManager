@@ -217,21 +217,36 @@ export function mediaOf(post) {
   return post.image_url ? [{ type: 'image', url: post.image_url }] : [];
 }
 
-// How a platform shows the post: 'post' | 'reel' | 'story'.
+// How a platform shows the post: 'post' | 'reel' | 'story'. A target's own format
+// (post_targets.format) wins; older posts kept one choice per platform in posts.formats.
 export function formatOf(post, platform) {
+  if (['post', 'reel', 'story'].includes(post.format)) return post.format;
   let f = null;
   try { f = JSON.parse(post.formats || '{}')?.[platform]; } catch { /* old posts */ }
+  if (Array.isArray(f)) f = f[0];
   if (['post', 'reel', 'story'].includes(f)) return f;
   return platform === 'facebook' && post.fb_reel ? 'reel' : 'post';
 }
 
+// A post can hold photos and a video: Reels use the video, posts and stories the photos
+// (or the video when there are no photos).
+export function mediaFor(post, fmt) {
+  const media = mediaOf(post);
+  const images = media.filter((m) => m.type === 'image');
+  const video = media.filter((m) => m.type === 'video');
+  if (fmt === 'reel') return video;
+  if (fmt === 'video') return video.length ? video : images;
+  return images.length ? images : video;
+}
+
 // ---------- Facebook ----------
 export async function publishFacebook(env, pageId, token, post) {
-  const media = mediaOf(post);
+  const fmt = formatOf(post, 'facebook');
+  const media = mediaFor(post, fmt);
   const video = media.find((m) => m.type === 'video');
   const images = media.filter((m) => m.type === 'image');
   const text = post.message || '';
-  const fmt = formatOf(post, 'facebook');
+  if (fmt === 'reel' && !video) throw new Error('الريلز محتاج فيديو');
 
   if (fmt === 'story') {
     if (!media.length) throw new Error('ستوري فيسبوك محتاج صورة أو فيديو');
@@ -366,12 +381,12 @@ export async function finishInstagram(env, igId, token, containerId) {
 // Returns the published media id, or { pending: containerId } when a video is still
 // processing (the cron job finishes it later).
 export async function publishInstagram(env, igId, token, post) {
-  const media = mediaOf(post);
+  const fmt = formatOf(post, 'instagram');
+  const media = mediaFor(post, fmt);
   const video = media.find((m) => m.type === 'video');
   const images = media.filter((m) => m.type === 'image');
   const caption = post.message || '';
-  if (!media.length) throw new Error('إنستجرام محتاج صورة أو فيديو.');
-  const fmt = formatOf(post, 'instagram');
+  if (!media.length) throw new Error(fmt === 'reel' ? 'الريلز محتاج فيديو' : 'إنستجرام محتاج صورة أو فيديو.');
 
   if (fmt === 'story') {
     // Stories have no caption. A video is one story; every photo is its own story.

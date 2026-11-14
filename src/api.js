@@ -1,6 +1,6 @@
 import { checkPassword, sessionCookie, clearCookie, currentUser, hashPassword, verifyPassword, memberFromRow, PERMS } from './auth.js';
 import { authorize, Forbidden, clientFilter } from './access.js';
-import { metaConfigured, readPending, savePending, mediaOf } from './meta.js';
+import { metaConfigured, readPending, savePending, mediaOf, mediaFor } from './meta.js';
 import { startVideo, putChunk, finishVideo, videoExists, MediaError } from './media.js';
 import { createInvite, revokeInvites } from './invite.js';
 import { buildReport, createReportLink, clientForReportLink } from './reports.js';
@@ -36,7 +36,7 @@ function cleanUrl(value) {
 
 const POST_SELECT = `SELECT p.*, c.name AS client_name, c.color AS client_color,
   (SELECT json_group_array(json_object('id', pt.id, 'account_id', pt.account_id, 'status', pt.status,
-     'error', pt.error, 'platform', a.platform, 'name', a.name))
+     'error', pt.error, 'platform', a.platform, 'name', a.name, 'format', pt.format))
    FROM post_targets pt JOIN accounts a ON a.id = pt.account_id WHERE pt.post_id = p.id) AS targets
   FROM posts p JOIN clients c ON c.id = p.client_id`;
 
@@ -56,9 +56,9 @@ function readMedia(b) {
   })).filter((m) => m.url);
   const videos = list.filter((m) => m.type === 'video');
   if (videos.length > 1) bad('فيديو واحد بس في المنشور');
-  if (videos.length && list.length > 1) bad('مينفعش تجمع فيديو وصور في نفس المنشور');
-  if (list.length > MAX_IMAGES) bad(`أقصى عدد ${MAX_IMAGES} صور في الألبوم`);
-  return list;
+  if (list.length - videos.length > MAX_IMAGES) bad(`أقصى عدد ${MAX_IMAGES} صور في الألبوم`);
+  // Photos first, the video last.
+  return [...list.filter((m) => m.type === 'image'), ...videos];
 }
 
 const MAX_SERIES = 200;
@@ -100,19 +100,27 @@ async function readPostInput(env, b, { single = false, postId = 0 } = {}) {
   if (!media.length && owned.results.some((a) => a.platform === 'instagram')) bad('إنستجرام محتاج صورة أو فيديو. ضيفهم أو شيل حساب إنستجرام.');
   const picked = new Set(owned.results.map((a) => a.platform));
   if (!hasVideo && (picked.has('youtube') || picked.has('tiktok'))) bad(`${picked.has('youtube') ? 'يوتيوب' : 'تيك توك'} محتاج فيديو مرفوع على المنصة. ارفع فيديو أو شيل الحساب ده.`);
-  if (hasVideo && picked.has('linkedin')) bad('لينكدإن: نشر الفيديو من المنصة لسه مش متاح. شيل لينكدإن أو استخدم صور.');
+  if (hasVideo && !imageUrl && picked.has('linkedin')) bad('لينكدإن: نشر الفيديو من المنصة لسه مش متاح. شيل لينكدإن أو استخدم صور.');
   if (picked.has('meta_ads')) bad('حسابات الإعلانات مش بتتنشر عليها منشورات');
-  // Post / Reel / Story per platform.
+  // Post / Reel / Story per platform: any of them together (one target each).
   const formats = {};
   const NAMES = { facebook: 'فيسبوك', instagram: 'إنستجرام' };
   for (const p of ['facebook', 'instagram']) {
-    const f = b.formats?.[p];
-    formats[p] = ['post', 'reel', 'story'].includes(f) ? f : p === 'facebook' && b.fb_reel && hasVideo ? 'reel' : 'post';
+    const raw = b.formats?.[p];
+    let list = (Array.isArray(raw) ? raw : [raw]).filter((f) => ['post', 'reel', 'story'].includes(f));
+    if (!list.length) list = p === 'facebook' && b.fb_reel && hasVideo ? ['reel'] : ['post'];
+    formats[p] = [...new Set(list)];
     if (!picked.has(p)) continue;
-    if (formats[p] === 'reel' && !hasVideo) bad(`ريلز ${NAMES[p]} محتاج فيديو. اعمل فيديو من الصور 🎞️ أو اختار "منشور".`);
-    if (formats[p] === 'story' && !media.length) bad(`ستوري ${NAMES[p]} محتاج صورة أو فيديو.`);
+    if (formats[p].includes('reel') && !hasVideo) bad(`ريلز ${NAMES[p]} محتاج فيديو. دوس "🎬 ريلز" تاني وهيعمل فيديو من الصور.`);
+    if (formats[p].includes('story') && !media.length) bad(`ستوري ${NAMES[p]} محتاج صورة أو فيديو.`);
   }
-  const fbReel = formats.facebook === 'reel';
+  const reelPicked = ['facebook', 'instagram'].some((p) => picked.has(p) && formats[p].includes('reel'));
+  if (hasVideo && imageUrl && !reelPicked && !picked.has('youtube') && !picked.has('tiktok')) {
+    bad('ضفت صور وفيديو مع بعض، والفيديو بينزل كـ ريلز بس. علّم "🎬 ريلز" أو شيل الفيديو.');
+  }
+  const fbReel = formats.facebook.includes('reel');
+  // Rows for post_targets: [account id, format or null].
+  const targets = owned.results.flatMap((a) => (formats[a.platform] ? formats[a.platform].map((f) => [a.id, f]) : [[a.id, null]]));
   if (picked.has('whatsapp') && mode !== 'draft') {
     try {
       await checkWaLimit(env, owned.results.filter((a) => a.platform === 'whatsapp'), mode === 'now' ? [Date.now()] : times, postId);
@@ -122,7 +130,7 @@ async function readPostInput(env, b, { single = false, postId = 0 } = {}) {
     }
   }
 
-  return { clientId, accountIds, message, imageUrl, media: media.length ? JSON.stringify(media) : null, fbReel: fbReel ? 1 : 0, formats: JSON.stringify(formats), link, mode, times };
+  return { clientId, accountIds, message, imageUrl, media: media.length ? JSON.stringify(media) : null, fbReel: fbReel ? 1 : 0, formats: JSON.stringify(formats), targets, link, mode, times };
 }
 
 export async function handleApi(req, env, url) {
@@ -502,7 +510,7 @@ async function route(req, env, url) {
           CASE WHEN a.token_enc = '${GATEWAY}' THEN 1 ELSE 0 END AS auto
         FROM accounts a JOIN clients c ON c.id = a.client_id WHERE a.platform = 'whatsapp' AND ${scope('a.client_id')} ORDER BY c.name, a.name`),
     ]);
-    const shape = (r) => ({ ...r, media: mediaOf(r) });
+    const shape = (r) => ({ ...r, media: mediaFor(r, 'post') });
     return json({
       ready: ready.results.map(shape), upcoming: upcoming.results.map(shape),
       published: published.results.map(shape), failed: failed.results.map(shape), accounts: accounts.results,
@@ -618,8 +626,8 @@ async function route(req, env, url) {
       ).bind(input.clientId, input.message, input.imageUrl, input.media, input.fbReel, input.formats, input.link, at, status, now, seriesId)));
       ids.push(...res.map((r) => r.results[0].id));
     }
-    const targetStmts = ids.flatMap((pid) => input.accountIds.map((aid) =>
-      db.prepare('INSERT INTO post_targets (post_id, account_id) VALUES (?, ?)').bind(pid, aid)));
+    const targetStmts = ids.flatMap((pid) => input.targets.map(([aid, fmt]) =>
+      db.prepare('INSERT INTO post_targets (post_id, account_id, format) VALUES (?, ?, ?)').bind(pid, aid, fmt)));
     for (let i = 0; i < targetStmts.length; i += 90) await db.batch(targetStmts.slice(i, i + 90));
 
     // "Publish now": answer right away, the post publishes in the background.
@@ -671,7 +679,7 @@ async function route(req, env, url) {
     if (!at || at < Date.now() - 60000) bad('ميعاد النسخة لازم يكون في المستقبل');
     const src = await db.prepare('SELECT * FROM posts WHERE id = ?').bind(m[1]).first();
     if (!src) throw new HttpError(404, 'المنشور مش موجود');
-    const { results: targets } = await db.prepare('SELECT account_id FROM post_targets WHERE post_id = ?').bind(m[1]).all();
+    const { results: targets } = await db.prepare('SELECT account_id, format FROM post_targets WHERE post_id = ?').bind(m[1]).all();
     if (!targets.length) bad('المنشور ده ملوش حسابات. الحسابات بتاعته اتشالت.');
     for (const md of mediaOf(src)) {
       if (md.type === 'video' && !(await videoExists(env, md.url))) bad('الفيديو بتاع المنشور ده اتمسح من التخزين (بيتمسح بعد النشر بأسبوع). استخدم "نسخ وتكرار" وارفعه تاني.');
@@ -679,7 +687,7 @@ async function route(req, env, url) {
     const copy = await db.prepare(
       "INSERT INTO posts (client_id, message, image_url, media, fb_reel, formats, link, scheduled_at, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'scheduled', ?) RETURNING id"
     ).bind(src.client_id, src.message, src.image_url, src.media, src.fb_reel || 0, src.formats || null, src.link, at, Date.now()).first();
-    await db.batch(targets.map((t) => db.prepare('INSERT INTO post_targets (post_id, account_id) VALUES (?, ?)').bind(copy.id, t.account_id)));
+    await db.batch(targets.map((t) => db.prepare('INSERT INTO post_targets (post_id, account_id, format) VALUES (?, ?, ?)').bind(copy.id, t.account_id, t.format || null)));
     const saved = await db.prepare(`${POST_SELECT} WHERE p.id = ?`).bind(copy.id).first();
     return json(parsePost(saved), 201);
   }
@@ -709,7 +717,7 @@ async function route(req, env, url) {
       db.prepare('UPDATE posts SET client_id = ?, message = ?, image_url = ?, media = ?, fb_reel = ?, formats = ?, link = ?, scheduled_at = ?, status = ?, media_cleaned = 0 WHERE id = ?')
         .bind(input.clientId, input.message, input.imageUrl, input.media, input.fbReel, input.formats, input.link, at, status, m[1]),
       db.prepare('DELETE FROM post_targets WHERE post_id = ?').bind(m[1]),
-      ...input.accountIds.map((aid) => db.prepare('INSERT INTO post_targets (post_id, account_id) VALUES (?, ?)').bind(m[1], aid)),
+      ...input.targets.map(([aid, fmt]) => db.prepare('INSERT INTO post_targets (post_id, account_id, format) VALUES (?, ?, ?)').bind(m[1], aid, fmt)),
     ]);
     if (input.mode === 'now') {
       await db.prepare('UPDATE posts SET publish_started_at = ? WHERE id = ?').bind(Date.now(), m[1]).run();

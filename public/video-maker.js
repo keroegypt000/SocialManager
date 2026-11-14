@@ -307,7 +307,7 @@
   }
 
   // ---------------- dialog ----------------
-  window.openVideoMaker = function openVideoMaker({ esc, toast, onDone }) {
+  window.openVideoMaker = function openVideoMaker({ esc, toast, onDone, onCancel, files: startFiles }) {
     const dlg = document.createElement('dialog');
     dlg.className = 'dialog vm-dialog';
     dlg.innerHTML = `<form method="dialog" class="dlg-body">
@@ -344,7 +344,8 @@
       <div class="dlg-actions"><button type="button" class="btn primary" data-go disabled>🎬 اعمل الفيديو</button></div>
     </form>`;
     document.body.appendChild(dlg);
-    dlg.addEventListener('close', () => { stopPreview(); dlg.remove(); });
+    let made = false;
+    dlg.addEventListener('close', () => { stopPreview(); dlg.remove(); if (!made) onCancel?.(); });
     const f = dlg.querySelector('form');
     let files = [];
     const go = dlg.querySelector('[data-go]');
@@ -389,6 +390,7 @@
           files, size: f.elements.size.value, per: perPhoto(), motion: f.elements.motion.value,
           caption: f.elements.caption.value.trim(), music, musicFile, volume: Number(f.elements.volume.value), fit: f.elements.fit.value,
         }, setP);
+        made = true;
         dlg.close();
         await onDone(out);
       } catch (e) {
@@ -398,6 +400,7 @@
       }
     };
     dlg.showModal();
+    if (startFiles?.length) dlg.querySelector('#vm-files').onchange({ target: { files: startFiles } });
   };
   window.__videoMakerTest = { renderMusic, render, STYLES };
 })();
