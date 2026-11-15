@@ -229,7 +229,9 @@
   }
 
   // Record the whole thing in real time: canvas stream + music stream -> MediaRecorder.
-  async function render({ files, size, per, motion, caption, music, musicFile, volume, fit = 'blur' }, onProgress) {
+  // `ac`: an AudioContext made during the tap. Phones keep audio paused unless it's
+  // started from a tap, and a paused clock used to leave the video stuck at 0%.
+  async function render({ files, size, per, motion, caption, music, musicFile, volume, fit = 'blur', ac: givenAc }, onProgress) {
     const [W, H] = SIZES[size];
     const imgs = [];
     for (const f of files) imgs.push(await loadImage(f));
@@ -241,7 +243,7 @@
     const ctx = canvas.getContext('2d');
     drawFrame(ctx, imgs, 0, opt);
 
-    const ac = new (window.AudioContext || window.webkitAudioContext)();
+    const ac = givenAc || new (window.AudioContext || window.webkitAudioContext)();
     const dest = ac.createMediaStreamDestination();
     let source = null;
     if (music && music !== 'none') {
@@ -267,13 +269,15 @@
     rec.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
     const done = new Promise((r) => { rec.onstop = r; });
 
-    if (ac.state === 'suspended') await ac.resume();
+    // Don't wait forever for audio that the browser keeps paused.
+    if (ac.state === 'suspended') await Promise.race([ac.resume(), new Promise((r) => setTimeout(r, 1500))]);
     rec.start(500);
-    const t0 = ac.currentTime;
-    if (source) source.start(t0);
+    if (source) source.start(ac.currentTime);
+    // The video's clock: real time (keeps running even if the audio clock doesn't).
+    const p0 = performance.now();
     await new Promise((resolve) => {
       const tick = () => {
-        const t = ac.currentTime - t0;
+        const t = (performance.now() - p0) / 1000;
         drawFrame(ctx, imgs, Math.min(t, total - 0.001), opt);
         onProgress?.(Math.min(1, t / total));
         if (t >= total) return resolve();
@@ -323,6 +327,7 @@
           <option value="1:1">⬛ مربع 1:1</option><option value="16:9">🖥️ عرضي 16:9</option></select></div>
         <div><label>مدة الفيديو كله</label><select name="total">
           <option value="auto" selected>حسب الصور (3 ثواني للصورة)</option>
+          <option value="5">5 ثواني</option>
           <option value="10">10 ثواني</option><option value="15">15 ثانية</option><option value="20">20 ثانية</option>
           <option value="30">30 ثانية</option><option value="45">45 ثانية</option><option value="60">دقيقة كاملة</option></select></div>
         <div><label>الحركة</label><select name="motion"><option value="zoom">🔍 زووم هادي</option><option value="none">من غير حركة</option></select></div>
@@ -383,6 +388,9 @@
       if (files.length * perPhoto() < 3) return err('الفيديو لازم يكون 3 ثواني على الأقل: زوّد الصور أو المدة');
       err('');
       stopPreview();
+      // Made right here, during the tap, so phones let the music play.
+      let ac = null;
+      try { ac = new (window.AudioContext || window.webkitAudioContext)(); ac.resume(); } catch { /* no audio */ }
       go.disabled = true;
       const bar = dlg.querySelector('#vm-progress');
       bar.hidden = false;
@@ -390,8 +398,11 @@
       try {
         const out = await render({
           files, size: f.elements.size.value, per: perPhoto(), motion: f.elements.motion.value,
-          caption: f.elements.caption.value.trim(), music, musicFile, volume: Number(f.elements.volume.value), fit: f.elements.fit.value,
+          caption: f.elements.caption.value.trim(), music, musicFile, volume: Number(f.elements.volume.value), fit: f.elements.fit.value, ac,
         }, setP);
+        if (out.type !== 'video/mp4') {
+          throw new Error('متصفحك عمل الفيديو بصيغة WebM، وإنستجرام وواتساب مش بيقبلوها. افتح المنصة من Chrome محدّث (أو Safari على الآيفون) وجرّب تاني.');
+        }
         made = true;
         dlg.close();
         await onDone(out);
