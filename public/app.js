@@ -492,6 +492,10 @@ function syncNotice(s) {
   return `<div class="notice ok">${head} ${parts.join(' · ')}${ads}</div>`;
 }
 
+document.addEventListener('click', (e) => {
+  document.querySelectorAll('details.acc-more[open]').forEach((d) => { if (!d.contains(e.target)) d.open = false; });
+});
+
 async function renderClients(main, params) {
   const $ = (sel) => main.querySelector(sel); // this page's own elements only
   const [clients, accounts, sync] = await Promise.all([loadClients(), api('/accounts'), api('/sync').catch(() => ({}))]);
@@ -503,7 +507,7 @@ async function renderClients(main, params) {
   }
   if (params.get('connected')) notice = `<div class="notice ok">اتربط ${esc(params.get('connected'))} حساب بنجاح.</div>`;
   if (params.get('connected') === '0') notice = `<div class="notice">الربط تم بس مالقيناش صفحات. اتأكد إنك اخترت الصفحات في شاشة فيسبوك، وإنك أدمن عليها.</div>`;
-  if (params.get('error')) notice = `<div class="notice bad">${esc(params.get('error'))}</div>`;
+  if (params.get('error')) notice = `<div class="notice bad">${esc(params.get('error'))}${/sandbox|non_sandbox/i.test(params.get('error')) ? '<br>تيك توك لسه في وضع التجربة: ضيف الحساب في <b>Target Users</b> على صفحة التطبيق ودوس <b>Apply changes</b>، وادخل بنفس الحساب.' : ''}</div>`;
 
   main.innerHTML = `
     <div class="page-head"><h1>العملاء والحسابات</h1></div>
@@ -626,38 +630,64 @@ async function renderClients(main, params) {
   });
 }
 
+// One card per client: every platform has its own row, connected (✓ + accounts)
+// or not yet ("+ ربط"), so it's always clear what's linked and where to link more.
+const CARD_PLATFORMS = ['facebook', 'instagram', 'tiktok', 'whatsapp', 'youtube', 'linkedin', 'meta_ads'];
 function clientCard(c, accounts, clients) {
   const others = clients.filter((o) => o.id !== c.id);
+  const connectFor = (p) => {
+    if (p === 'facebook' || p === 'instagram' || p === 'meta_ads') {
+      return me.metaConfigured ? `<a class="btn small primary" href="/auth/meta/start?client_id=${c.id}">+ ربط</a>` : '<span class="muted small">مش متفعّل</span>';
+    }
+    if (p === 'whatsapp') return `<button class="btn small primary" data-add-wa="${c.id}">+ ضيف</button>`;
+    return me?.providers?.[p] ? `<a class="btn small primary" href="/auth/${p}/start?client_id=${c.id}" data-connect="${p}">+ ربط</a>` : null;
+  };
+  const accRow = (a) => `
+    <div class="acc-row">
+      ${a.picture ? `<img src="${esc(a.picture)}" alt="" loading="lazy">` : `<span class="acc-ph">${esc((a.name || '?').trim().charAt(0))}</span>`}
+      <span class="acc-name" title="${esc(a.name)}">${esc(a.name)}</span>
+      ${a.platform === 'whatsapp' ? (a.auto
+        ? `<button class="btn small wa-auto on" data-wa-auto="${a.id}" data-name="${esc(a.name)}" title="بتتنشر لوحدها">⚡ تلقائي</button>`
+        : `<button class="btn small wa-auto" data-wa-auto="${a.id}" data-name="${esc(a.name)}" title="خلّي الحالات تتنشر لوحدها">⚡ تلقائي؟</button>`) : ''}
+      <details class="acc-more"><summary title="إدارة الحساب">⋯</summary>
+        <div class="acc-menu">
+          ${others.length ? `<label class="small">نقل لعميل تاني</label><select data-move-account="${a.id}">
+            <option value="">اختار العميل…</option>${others.map((o) => `<option value="${o.id}">${esc(o.name)}</option>`).join('')}</select>` : ''}
+          <button class="btn small danger" data-del-account="${a.id}">فك الربط</button>
+        </div>
+      </details>
+    </div>`;
+  const rows = CARD_PLATFORMS.map((p) => {
+    const mine = accounts.filter((a) => a.platform === p);
+    const connect = connectFor(p);
+    if (!mine.length && !connect) return ''; // platform not switched on: keep the card short
+    return `
+      <div class="plat-row ${mine.length ? 'on' : 'off'}">
+        <div class="plat-head">${platformTag(p)}
+          ${mine.length ? '<span class="plat-ok">✓ مربوط</span>' : '<span class="muted small">مش مربوط</span>'}
+          <span class="plat-act">${mine.length && p !== 'whatsapp' ? '' : mine.length ? '' : connect}</span>
+        </div>
+        ${mine.map(accRow).join('')}
+        ${p === 'tiktok' && !mine.length ? '<div class="muted small plat-note">وضع التجربة: الحساب لازم يكون في Target Users على صفحة تطبيق تيك توك.</div>' : ''}
+      </div>`;
+  }).join('');
   return `
-    <div class="card">
+    <div class="card client-card" style="--cc:${esc(c.color)}">
       <div class="client-head">
-        <span class="dot" style="background:${esc(c.color)};width:14px;height:14px"></span>
-        <h2>${esc(c.name)}</h2>
-        <button class="btn small" data-rename-client="${c.id}" title="غيّر اسم العميل">✏️ تعديل</button>
-        <button class="btn small danger" data-del-client="${c.id}">حذف</button>
+        <span class="dot" style="background:var(--cc);width:14px;height:14px"></span>
+        <h2 title="${esc(c.name)}">${esc(c.name)}</h2>
+        <details class="acc-more client-more"><summary title="إعدادات العميل">⋯</summary>
+          <div class="acc-menu">
+            <button class="btn small" data-rename-client="${c.id}">✏️ تغيير الاسم</button>
+            <button class="btn small" data-invite="${c.id}" data-name="${esc(c.name)}">🔗 لينك دعوة للعميل</button>
+            <button class="btn small danger" data-del-client="${c.id}">🗑 حذف العميل</button>
+          </div>
+        </details>
       </div>
-      ${accounts.map((a) => `
-        <div class="account">
-          ${a.picture ? `<img src="${esc(a.picture)}" alt="">` : '<img alt="">'}
-          <span class="name">${esc(a.name)}</span>
-          ${platformTag(a.platform)}
-          ${a.platform === 'whatsapp' ? (a.auto
-            ? `<button class="btn small wa-auto on" data-wa-auto="${a.id}" data-name="${esc(a.name)}" title="بتتنشر لوحدها">⚡ تلقائي</button>`
-            : `<button class="btn small wa-auto" data-wa-auto="${a.id}" data-name="${esc(a.name)}" title="خلّي الحالات تتنشر لوحدها">⚡ خليها تلقائي</button>`) : ''}
-          ${others.length ? `<select class="move" data-move-account="${a.id}" title="نقل لعميل تاني">
-            <option value="">نقل ←</option>
-            ${others.map((o) => `<option value="${o.id}">${esc(o.name)}</option>`).join('')}
-          </select>` : ''}
-          <button class="btn small" data-del-account="${a.id}" title="فك الربط">✕</button>
-        </div>`).join('') || '<p class="muted small">مفيش حسابات مربوطة.</p>'}
-      <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
-        ${me.metaConfigured
-          ? `<a class="btn primary small" href="/auth/meta/start?client_id=${c.id}">ربط فيسبوك وإنستجرام</a>`
-          : '<span class="muted small">الربط هيتفعّل بعد إعداد تطبيق Meta</span>'}
-        ${EXTRA.map((p) => connectBtn(p, c.id)).join('')}
-        <button class="btn small" data-invite="${c.id}" data-name="${esc(c.name)}" title="ابعت اللينك للعميل يربط صفحاته بنفسه">🔗 لينك دعوة</button>
-        <button class="btn small" data-add-wa="${c.id}">+ حالة واتساب</button>
-        <a class="btn small" href="#/compose?client=${c.id}">منشور جديد</a>
+      <div class="plat-list">${rows}</div>
+      <div class="client-foot">
+        <a class="btn primary small" href="#/compose?client=${c.id}">✍️ منشور جديد</a>
+        ${accounts.some((a) => a.platform === 'whatsapp') ? `<button class="btn small" data-add-wa="${c.id}">+ رقم واتساب تاني</button>` : ''}
       </div>
     </div>`;
 }
