@@ -1365,9 +1365,9 @@ async function renderCompose(main, params) {
       if (row.hidden) continue;
       any = true;
       if (!getFormats(plat).length) setFormat(plat, 'post');
-      if (getFormats(plat).includes('story')) notes.push(`ستوري ${plat === 'facebook' ? 'فيسبوك' : 'إنستجرام'}: بيختفي بعد 24 ساعة ومن غير الكلام${photos > 1 ? '، وكل صورة بتنزل ستوري لوحدها' : ''}.`);
+      if (getFormats(plat).includes('story')) notes.push(`ستوري ${plat === 'facebook' ? 'فيسبوك' : 'إنستجرام'}: بيختفي بعد 24 ساعة ومن غير الكلام${hasVideo ? '، وبينزل الفيديو' : photos > 1 ? '، وكل صورة بتنزل ستوري لوحدها' : ''}.`);
     }
-    if (any && hasVideo && photos) notes.push('🎬 الفيديو بينزل في الريلز، والصور في المنشور والستوري.');
+    if (any && hasVideo && photos) notes.push('🎬 الفيديو بينزل في الريلز والستوري، والصور في المنشور بس. الستوري مش بيتعمل غير لو علّمت عليه.');
     $('#p-formats').hidden = !any;
     $('#p-fmt-hint').textContent = notes.join(' ');
   };

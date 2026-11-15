@@ -228,14 +228,15 @@ export function formatOf(post, platform) {
   return platform === 'facebook' && post.fb_reel ? 'reel' : 'post';
 }
 
-// A post can hold photos and a video: Reels use the video, posts and stories the photos
+// A post can hold photos and a video: Reels and Stories use the video (a Story from
+// the photos looked like a still picture next to the Reel); posts use the photos
 // (or the video when there are no photos).
 export function mediaFor(post, fmt) {
   const media = mediaOf(post);
   const images = media.filter((m) => m.type === 'image');
   const video = media.filter((m) => m.type === 'video');
   if (fmt === 'reel') return video;
-  if (fmt === 'video') return video.length ? video : images;
+  if (fmt === 'video' || fmt === 'story') return video.length ? video : images;
   return images.length ? images : video;
 }
 
