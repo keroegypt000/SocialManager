@@ -1,4 +1,5 @@
 import { ensureSchema } from './db.js';
+import { trackOrigin } from './origin.js';
 import { handleApi, json } from './api.js';
 import { requireSecrets, isOwner } from './auth.js';
 import { metaStart, metaCallback } from './meta.js';
@@ -24,6 +25,10 @@ function errorPage(message) {
 export default {
   async fetch(req, env, ctx) {
     const url = new URL(req.url);
+    // New site address? Move saved media links to it (once, in the background).
+    if (url.pathname.startsWith('/api/')) {
+      ctx.waitUntil(ensureSchema(env).then(() => trackOrigin(env, url.origin)).catch((err) => console.error('origin', err)));
+    }
 
     // Uploaded media must be public: Facebook and Instagram download it from here.
     const image = url.pathname.match(/^\/media\/([0-9a-f-]{36}\.jpg)$/);
