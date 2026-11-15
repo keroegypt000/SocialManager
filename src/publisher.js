@@ -115,6 +115,10 @@ export async function runProcessing(env) {
         if (st.status === 'PUBLISH_COMPLETE') {
           const id = st.publicaly_available_post_id?.[0] || st.publicly_available_post_id?.[0] || t.external_post_id;
           await env.DB.prepare("UPDATE post_targets SET status = 'published', external_post_id = ?, error = NULL WHERE id = ?").bind(String(id), t.id).run();
+        } else if (st.status === 'SEND_TO_USER_INBOX') {
+          // Drafts mode (before TikTok's review): it's in the owner's TikTok inbox now.
+          const pid = String(t.external_post_id).replace(/^tiktok:/, '');
+          await env.DB.prepare("UPDATE post_targets SET status = 'published', external_post_id = ?, error = NULL WHERE id = ?").bind(`inbox:${pid}`, t.id).run();
         } else if (st.status === 'FAILED') {
           await fail(env, t.id, new Error(`تيك توك رفض الفيديو${st.fail_reason ? `: ${st.fail_reason}` : ''}`));
         } else if (Date.now() - (t.started_at || 0) > PROCESSING_TIMEOUT) {

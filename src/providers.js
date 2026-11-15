@@ -243,24 +243,32 @@ async function publishTikTok(env, acc, post, media) {
   const file = await openVideo(env, video.url);
   if (!file) throw new Error('تيك توك بيقبل فيديو مرفوع على المنصة بس.');
   const token = await freshToken(env, acc, 'tiktok');
-  const creator = await tiktokCall(env, token, '/v2/post/publish/creator_info/query/', {});
-  const options = creator.data?.privacy_level_options || [];
-  // Until TikTok approves the app (review), it may only post as "Only me" (SELF_ONLY):
-  // anything else is refused with "Please review our integration guidelines", even
-  // though creator_info lists PUBLIC_TO_EVERYONE. After approval set TIKTOK_AUDITED=1.
+  // Before TikTok approves the app, Direct Post only works on private accounts. So until
+  // then (TIKTOK_AUDITED not set) the video goes to the account's TikTok drafts/inbox:
+  // the owner gets a notification, adds the caption and taps Post in the app.
   const audited = String(env.TIKTOK_AUDITED || '').trim() === '1';
-  const privacy = audited && options.includes('PUBLIC_TO_EVERYONE') ? 'PUBLIC_TO_EVERYONE'
-    : options.includes('SELF_ONLY') || !options.length ? 'SELF_ONLY' : options[0];
-
-  // TikTok chunks: 5-64 MB each, the last one may be bigger; small files go in one piece.
   const MB = 1024 * 1024;
   const chunkSize = file.size <= 64 * MB ? file.size : 20 * MB;
   const count = file.size <= 64 * MB ? 1 : Math.floor(file.size / chunkSize);
+  const source = { source: 'FILE_UPLOAD', video_size: file.size, chunk_size: chunkSize, total_chunk_count: count };
+  if (!audited) {
+    const init = await tiktokCall(env, token, '/v2/post/publish/inbox/video/init/', { source_info: source });
+    await uploadTikTokChunks(file, init.data?.upload_url, chunkSize, count);
+    return { pending: `tiktok:${init.data.publish_id}` };
+  }
+  const creator = await tiktokCall(env, token, '/v2/post/publish/creator_info/query/', {});
+  const options = creator.data?.privacy_level_options || [];
+  const privacy = options.includes('PUBLIC_TO_EVERYONE') ? 'PUBLIC_TO_EVERYONE' : options[0] || 'SELF_ONLY';
+  // TikTok chunks: 5-64 MB each, the last one may be bigger; small files go in one piece.
   const init = await tiktokCall(env, token, '/v2/post/publish/video/init/', {
     post_info: { title: String(post.message || '').slice(0, 2200), privacy_level: privacy, disable_comment: false, disable_duet: false, disable_stitch: false },
-    source_info: { source: 'FILE_UPLOAD', video_size: file.size, chunk_size: chunkSize, total_chunk_count: count },
+    source_info: source,
   });
-  const { publish_id: publishId, upload_url: uploadUrl } = init.data || {};
+  await uploadTikTokChunks(file, init.data?.upload_url, chunkSize, count);
+  return { pending: `tiktok:${init.data.publish_id}` };
+}
+
+async function uploadTikTokChunks(file, uploadUrl, chunkSize, count) {
   if (!uploadUrl) throw new Error('TikTok: مرجعش لينك الرفع');
   for (let i = 0; i < count; i++) {
     const start = i * chunkSize;
@@ -274,7 +282,6 @@ async function publishTikTok(env, acc, post, media) {
     });
     if (!put.ok) throw new Error(`TikTok: رفع الجزء ${i + 1} فشل (${put.status})`);
   }
-  return { pending: `tiktok:${publishId}` };
 }
 
 export async function tiktokStatus(env, acc, publishId) {

@@ -735,6 +735,8 @@ async function renderContent(main, params) {
           ${first && t.message ? `<div class="st-cap muted small">${esc(t.message.slice(0, 90))}</div>` : ''}
           ${first?.type === 'video' && first.duration ? `<div class="muted small">🎬 المدة الأصلية: ${Math.round(first.duration)} ثانية${first.width ? ` · ${first.width}×${first.height}` : ''}</div>` : ''}
           ${t.error ? `<div class="target-error">${esc(t.error)}</div>` : ''}
+          ${t.platform === 'tiktok' && String(t.external_post_id || '').startsWith('inbox:') ? `<div class="notice small" style="margin:4px 0">📥 اتبعت لمسودات تيك توك. افتح تطبيق تيك توك (الإشعارات أو صندوق الوارد)، الصق الكلام ودوس <b>نشر</b>.
+            ${t.message ? `<button class="btn small" data-copy-cap="${t.target_id}">📋 انسخ الكلام</button>` : ''}</div>` : ''}
           <div class="live-box" hidden></div>
           <div class="wa-actions">
             ${t.target_status === 'published' && t.platform !== 'whatsapp' ? `<button class="btn small" data-live>🔍 اللي على ${esc(PLATFORM[t.platform] || '')}</button>` : ''}
@@ -788,6 +790,12 @@ async function renderContent(main, params) {
         b.disabled = false;
         b.textContent = '🔍 جرّب تاني';
       }
+    };
+  });
+  main.querySelectorAll('[data-copy-cap]').forEach((b) => {
+    b.onclick = async () => {
+      const t = items.find((x) => String(x.target_id) === b.dataset.copyCap);
+      try { await navigator.clipboard.writeText(t?.message || ''); toast('الكلام اتنسخ ✅'); } catch { toast('مقدرتش أنسخ، انسخه بإيدك'); }
     };
   });
   main.querySelectorAll('[data-retry]').forEach((b) => {
