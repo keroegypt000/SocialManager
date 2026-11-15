@@ -114,7 +114,7 @@ Cloudflare هيعمل قاعدة البيانات لوحده في أول نشر.
 2. **APIs & Services ← Library** ← فعّل **YouTube Data API v3**
 3. **OAuth consent screen** ← External ← ضيف إيميلك وإيميلات العملاء في **Test users**
 4. **Credentials ← Create credentials ← OAuth client ID ← Web application**
-   - Authorized redirect URI: `https://socialmanager.fairman200818.workers.dev/auth/youtube/callback`
+   - Authorized redirect URI: `https://socialmanager.itsc1.workers.dev/auth/youtube/callback`
 5. حط في Cloudflare: `GOOGLE_CLIENT_ID` و `GOOGLE_CLIENT_SECRET`
 
 ⚠️ جوجل بيخلي الفيديوهات اللي بتترفع من تطبيق **لسه متراجعش** تنزل **Private**. عشان تنزل Public لازم تقدم المشروع لمراجعة جوجل (YouTube API audit).
@@ -122,7 +122,7 @@ Cloudflare هيعمل قاعدة البيانات لوحده في أول نشر.
 ### لينكدإن (نص وصور على حسابك الشخصي)
 1. [linkedin.com/developers/apps](https://www.linkedin.com/developers/apps) ← Create app (محتاج صفحة شركة على لينكدإن تربطها بالتطبيق)
 2. **Products** ← ضيف **Sign In with LinkedIn using OpenID Connect** و **Share on LinkedIn**
-3. **Auth** ← Redirect URL: `https://socialmanager.fairman200818.workers.dev/auth/linkedin/callback`
+3. **Auth** ← Redirect URL: `https://socialmanager.itsc1.workers.dev/auth/linkedin/callback`
 4. حط في Cloudflare: `LINKEDIN_CLIENT_ID` و `LINKEDIN_CLIENT_SECRET`
 
 ملاحظات: النشر على **صفحات الشركات** محتاج موافقة لينكدإن على Community Management API. الصلاحية بتنتهي كل 60 يوم، وبعدها تربط تاني. الفيديو على لينكدإن لسه مش مدعوم من المنصة.
@@ -130,7 +130,7 @@ Cloudflare هيعمل قاعدة البيانات لوحده في أول نشر.
 ### تيك توك (فيديو بس)
 1. [developers.tiktok.com](https://developers.tiktok.com) ← Manage apps ← Connect an app
 2. ضيف **Login Kit** و **Content Posting API** (فعّل Direct Post)
-3. Redirect URI: `https://socialmanager.fairman200818.workers.dev/auth/tiktok/callback`
+3. Redirect URI: `https://socialmanager.itsc1.workers.dev/auth/tiktok/callback`
 4. Scopes: `user.info.basic`, `video.publish`, `video.upload`
 5. حط في Cloudflare: `TIKTOK_CLIENT_KEY` و `TIKTOK_CLIENT_SECRET`
 
