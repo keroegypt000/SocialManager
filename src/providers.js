@@ -87,12 +87,26 @@ const PROVIDERS = {
 export const EXTRA_PLATFORMS = Object.keys(PROVIDERS);
 export const providersStatus = (env) => Object.fromEntries(EXTRA_PLATFORMS.map((p) => [p, PROVIDERS[p].configured(env)]));
 
+// What TikTok's error codes mean, in plain words.
+const TIKTOK_HINTS = {
+  unaudited_client_can_only_post_to_private_accounts: 'تيك توك لسه ماراجعش التطبيق: لازم حساب تيك توك نفسه يبقى خاص (Private account) من إعدادات الخصوصية في التطبيق لحد المراجعة.',
+  privacy_level_option_mismatch: 'إعداد الخصوصية مش من الاختيارات المسموحة للحساب ده.',
+  spam_risk_too_many_posts: 'وصلت لحد تيك توك اليومي للنشر من التطبيق. جرّب بكرة.',
+  spam_risk_user_banned_from_posting: 'تيك توك موقف النشر على الحساب ده.',
+  reached_active_user_cap: 'التطبيق وصل لأقصى عدد مستخدمين في اليوم (قبل المراجعة).',
+  url_ownership_unverified: 'لازم تأكيد ملكية الدومين في تطبيق تيك توك.',
+  scope_not_authorized: 'الحساب ماوافقش على صلاحية النشر: اربطه تاني ووافق على كل الصلاحيات.',
+};
+
 async function jsonOrThrow(res, who) {
   const data = await res.json().catch(() => ({}));
   const err = data.error && typeof data.error === 'object' && data.error.code && data.error.code !== 'ok' ? data.error : null;
   if (!res.ok || err || (typeof data.error === 'string' && data.error)) {
     const msg = err?.message || data.error_description || data.message || (typeof data.error === 'string' ? data.error : '') || `HTTP ${res.status}`;
-    throw new Error(`${who}: ${msg}`);
+    // Keep the provider's error code: it says what's actually wrong (the message is often generic).
+    const code = err?.code || (typeof data.error === 'string' ? '' : data.error?.code) || '';
+    const hint = TIKTOK_HINTS[code] ? ` — ${TIKTOK_HINTS[code]}` : '';
+    throw new Error(`${who}: ${msg}${code ? ` [${code}]` : ''}${hint}`);
   }
   return data;
 }
