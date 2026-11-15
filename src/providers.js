@@ -62,14 +62,14 @@ const PROVIDERS = {
     configured: (env) => Boolean(env.TIKTOK_CLIENT_KEY && env.TIKTOK_CLIENT_SECRET),
     authUrl(env, redirect, state) {
       const u = new URL(`${b(env, 'TIKTOK_AUTH_BASE', 'https://www.tiktok.com')}/v2/auth/authorize/`);
-      u.search = new URLSearchParams({ client_key: env.TIKTOK_CLIENT_KEY, response_type: 'code', scope: 'user.info.basic,video.publish,video.upload', redirect_uri: redirect, state });
+      u.search = new URLSearchParams({ client_key: String(env.TIKTOK_CLIENT_KEY).trim(), response_type: 'code', scope: 'user.info.basic,video.publish,video.upload', redirect_uri: redirect, state });
       return u.toString();
     },
     async token(env, params) {
       const res = await fetch(`${b(env, 'TIKTOK_API_BASE', 'https://open.tiktokapis.com')}/v2/oauth/token/`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams({ client_key: env.TIKTOK_CLIENT_KEY, client_secret: env.TIKTOK_CLIENT_SECRET, ...params }),
+        body: new URLSearchParams({ client_key: String(env.TIKTOK_CLIENT_KEY).trim(), client_secret: String(env.TIKTOK_CLIENT_SECRET).trim(), ...params }),
       });
       return jsonOrThrow(res, 'TikTok');
     },
