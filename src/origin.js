@@ -6,12 +6,15 @@ let known = null;
 
 export async function trackOrigin(env, origin) {
   if (!/^https:\/\//.test(origin) || /localhost|127\.0\.0\.1/.test(origin)) return;
-  // Preview links (<version>-socialmanager.<account>.workers.dev) are not the site's address.
+  // On workers.dev only the real addresses count: "som." (the short front door, a tiny
+  // worker that forwards here) or "socialmanager." itself; preview links don't.
   const host = new URL(origin).hostname;
-  if (host.endsWith('.workers.dev') && !host.startsWith('socialmanager.')) return;
+  if (host.endsWith('.workers.dev') && !/^(som|socialmanager)\./.test(host)) return;
   if (known === origin) return;
   const row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'site_origin'").first();
   const old = row?.value;
+  // Once the short "som." address is in use, visits to the long one don't move links back.
+  if (old && /^https:\/\/som\./.test(old) && host.startsWith('socialmanager.')) { known = origin; return; }
   if (old && old !== origin) {
     await env.DB.batch([
       env.DB.prepare('UPDATE posts SET media = replace(media, ?, ?) WHERE instr(media, ?) > 0').bind(old, origin, old),
