@@ -231,8 +231,12 @@ async function publishTikTok(env, acc, post, media) {
   const token = await freshToken(env, acc, 'tiktok');
   const creator = await tiktokCall(env, token, '/v2/post/publish/creator_info/query/', {});
   const options = creator.data?.privacy_level_options || [];
-  // Apps not yet audited by TikTok can only post privately (SELF_ONLY).
-  const privacy = options.includes('PUBLIC_TO_EVERYONE') ? 'PUBLIC_TO_EVERYONE' : options[0] || 'SELF_ONLY';
+  // Until TikTok approves the app (review), it may only post as "Only me" (SELF_ONLY):
+  // anything else is refused with "Please review our integration guidelines", even
+  // though creator_info lists PUBLIC_TO_EVERYONE. After approval set TIKTOK_AUDITED=1.
+  const audited = String(env.TIKTOK_AUDITED || '').trim() === '1';
+  const privacy = audited && options.includes('PUBLIC_TO_EVERYONE') ? 'PUBLIC_TO_EVERYONE'
+    : options.includes('SELF_ONLY') || !options.length ? 'SELF_ONLY' : options[0];
 
   // TikTok chunks: 5-64 MB each, the last one may be bigger; small files go in one piece.
   const MB = 1024 * 1024;
