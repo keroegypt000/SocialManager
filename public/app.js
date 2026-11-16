@@ -1222,6 +1222,7 @@ async function renderCompose(main, params) {
               <label><input type="checkbox" name="fmt-instagram" value="story"><span>⭕ ستوري</span></label></div></div>
             <div class="muted small" id="p-fmt-hint"></div>
           </div>
+          <div id="p-tiktok" hidden></div>
           <div class="muted small" id="p-media-hint" style="margin-top:6px"></div>
         </div>
         <div class="field">
@@ -1408,7 +1409,94 @@ async function renderCompose(main, params) {
     if (any && hasVideo && photos) notes.push('🎬 الفيديو بينزل في الريلز والستوري، والصور في المنشور بس. الستوري مش بيتعمل غير لو علّمت عليه.');
     $('#p-formats').hidden = !any;
     $('#p-fmt-hint').textContent = notes.join(' ');
+    renderTikTok();
   };
+
+  // --- TikTok posting panel (TikTok's content-sharing rules): who posts, who can see it
+  // (no default), interactions, commercial-content disclosure and the consent line. ---
+  const ttCreator = {}; // account id -> creator info | { error } | 'loading'
+  const ttOpts = {};    // account id -> choices
+  for (const [id, o] of Object.entries(srcFormats.tiktok_opts || {})) {
+    ttOpts[id] = { ...o, disclose: !!(o.brand_organic || o.brand_content) };
+  }
+  const TT_PRIVACY = {
+    PUBLIC_TO_EVERYONE: 'الكل · Everyone', MUTUAL_FOLLOW_FRIENDS: 'الأصحاب · Friends',
+    FOLLOWER_OF_CREATOR: 'المتابعين · Followers', SELF_ONLY: 'أنا بس · Only me',
+  };
+  const ttPicked = () => [...document.querySelectorAll('#p-accounts input:checked')].filter((i) => i.dataset.platform === 'tiktok');
+  const ttName = (i) => (i.closest('label')?.textContent || '').replace(PLATFORM.tiktok, '').trim();
+  function ttCard(id, name) {
+    const c = ttCreator[id];
+    if (!c || c === 'loading') return `<div class="tt-card"><div class="muted small">جاري تحميل بيانات حساب تيك توك "${esc(name)}"…</div></div>`;
+    if (c.error) return `<div class="tt-card"><div class="notice bad">تيك توك (${esc(name)}): ${esc(c.error)}</div><button type="button" class="btn small" data-tt-retry="${id}">حاول تاني</button></div>`;
+    const o = (ttOpts[id] ||= { privacy: '', comment: false, duet: false, stitch: false, disclose: false, brand_organic: false, brand_content: false });
+    const video = media.find((m) => m.type === 'video');
+    const tooLong = video?.duration && c.max_duration && video.duration > c.max_duration;
+    const box = (k, label, en, off) => `<label title="${off ? 'صاحب الحساب قافلها من إعدادات تيك توك' : ''}"><input type="checkbox" data-tt="${id}" data-k="${k}" ${o[k] && !off ? 'checked' : ''} ${off ? 'disabled' : ''}><span>${label} <small>${en}</small></span></label>`;
+    const privOpts = c.privacy_options.map((p) => {
+      const lock = p === 'SELF_ONLY' && o.disclose && o.brand_content;
+      return `<option value="${p}" ${o.privacy === p ? 'selected' : ''} ${lock ? 'disabled' : ''}>${TT_PRIVACY[p] || p}${lock ? ' (مش متاح للمحتوى المدفوع)' : ''}</option>`;
+    }).join('');
+    const label = o.disclose && o.brand_content ? 'Paid partnership' : o.disclose && o.brand_organic ? 'Promotional content' : '';
+    return `
+      <div class="tt-card">
+        <div class="tt-head">
+          ${c.avatar ? `<img src="${esc(c.avatar)}" alt="">` : '<span class="acc-ph">♪</span>'}
+          <div><b>${esc(c.nickname || name)}</b><div class="muted small" dir="ltr">${c.username ? '@' + esc(c.username) : ''}</div></div>
+          <span class="tt-badge">TikTok</span>
+        </div>
+        ${tooLong ? `<div class="notice bad">الفيديو أطول من المسموح للحساب ده (${Math.floor(c.max_duration)} ثانية). قصّره أو شيل تيك توك.</div>` : ''}
+        <label class="tt-label">مين يشوف الفيديو؟ <small>Who can view this video</small></label>
+        <select data-tt="${id}" data-k="privacy" class="${o.privacy ? '' : 'tt-need'}">
+          <option value="" ${o.privacy ? '' : 'selected'} disabled>اختار…  ·  Select</option>${privOpts}
+        </select>
+        <label class="tt-label">تسمح للناس بـ <small>Allow users to</small></label>
+        <div class="tt-allow">
+          ${box('comment', '💬 تعليق', 'Comment', c.comment_disabled)}
+          ${box('duet', '👥 دويتو', 'Duet', c.duet_disabled)}
+          ${box('stitch', '✂️ ستيتش', 'Stitch', c.stitch_disabled)}
+        </div>
+        <label class="tt-switch"><input type="checkbox" data-tt="${id}" data-k="disclose" ${o.disclose ? 'checked' : ''}>
+          <span>📢 الفيديو ده إعلان أو بيروّج لحاجة <small>Disclose video content</small></span></label>
+        ${o.disclose ? `
+          <div class="tt-disclose">
+            <label class="tt-check"><input type="checkbox" data-tt="${id}" data-k="brand_organic" ${o.brand_organic ? 'checked' : ''}>
+              <span><b>علامتك التجارية · Your brand</b><br><small>بتروّج لنفسك أو لشغلك. الفيديو هيتعلّم <bdi dir="ltr">"Promotional content"</bdi>.</small></span></label>
+            <label class="tt-check" title="${o.privacy === 'SELF_ONLY' ? 'المحتوى المدفوع مينفعش يبقى "أنا بس"' : ''}"><input type="checkbox" data-tt="${id}" data-k="brand_content" ${o.brand_content ? 'checked' : ''} ${o.privacy === 'SELF_ONLY' ? 'disabled' : ''}>
+              <span><b>محتوى مدفوع · Branded content</b><br><small>بتروّج لبراند تاني مقابل حاجة. الفيديو هيتعلّم <bdi dir="ltr">"Paid partnership"</bdi>.${o.privacy === 'SELF_ONLY' ? ' (مش متاح مع "أنا بس")' : ''}</small></span></label>
+            ${!o.brand_organic && !o.brand_content ? '<div class="notice bad small">اختار واحد على الأقل، أو اقفل الإفصاح.</div>' : `<div class="muted small">الفيديو هيظهر عليه: <b dir="ltr">${label}</b></div>`}
+          </div>` : ''}
+        <div class="tt-consent small">بالنشر إنت موافق على شروط تيك توك ${o.disclose && o.brand_content ? 'للمحتوى المدفوع والموسيقى' : 'لاستخدام الموسيقى'}:<div dir="ltr">By posting, you agree to TikTok's ${o.disclose && o.brand_content ? '<a href="https://www.tiktok.com/legal/page/global/bc-policy/en" target="_blank" rel="noopener">Branded Content Policy</a> and ' : ''}<a href="https://www.tiktok.com/legal/page/global/music-usage-confirmation/en" target="_blank" rel="noopener">Music Usage Confirmation</a>.</div></div>
+      </div>`;
+  }
+  function renderTikTok() {
+    const box = $('#p-tiktok');
+    const picked = ttPicked();
+    box.hidden = !picked.length;
+    if (!picked.length) return;
+    for (const i of picked) {
+      if (ttCreator[i.value]) continue;
+      ttCreator[i.value] = 'loading';
+      api(`/tiktok/creator/${i.value}`)
+        .then((c) => { ttCreator[i.value] = c; })
+        .catch((err) => { ttCreator[i.value] = { error: err.message }; })
+        .finally(renderTikTok);
+    }
+    box.innerHTML = `<label>إعدادات تيك توك <span class="muted small">(لازم تختار مين يشوف الفيديو)</span></label>`
+      + picked.map((i) => ttCard(i.value, ttName(i))).join('')
+      + '<div class="muted small">بعد النشر تيك توك بياخد كام دقيقة يجهّز الفيديو قبل ما يظهر على البروفايل.</div>';
+  }
+  $('#p-tiktok').addEventListener('change', (e) => {
+    const el = e.target.closest('[data-tt]');
+    if (!el) return;
+    const o = ttOpts[el.dataset.tt];
+    o[el.dataset.k] = el.type === 'checkbox' ? el.checked : el.value;
+    renderTikTok();
+  });
+  $('#p-tiktok').addEventListener('click', (e) => {
+    const r = e.target.closest('[data-tt-retry]');
+    if (r) { delete ttCreator[r.dataset.ttRetry]; renderTikTok(); }
+  });
   // Reel without a video: make one from the photos right away.
   $('#p-formats').onchange = (e) => {
     if (e.target.value === 'reel' && e.target.checked && !media.some((m) => m.type === 'video')) {
@@ -1681,6 +1769,24 @@ async function renderCompose(main, params) {
       errBox.hidden = false;
       return;
     }
+    if (m !== 'draft') {
+      for (const i of ttPicked()) {
+        const o = ttOpts[i.value];
+        const c = ttCreator[i.value];
+        const name = ttName(i) || 'تيك توك';
+        let msg = '';
+        if (!c || c === 'loading') msg = 'استنى بيانات حساب تيك توك تحمّل.';
+        else if (c.error) msg = `تيك توك (${name}): ${c.error}`;
+        else if (!o?.privacy) msg = `تيك توك (${name}): اختار مين يشوف الفيديو.`;
+        else if (o.disclose && !o.brand_organic && !o.brand_content) msg = `تيك توك (${name}): اختار نوع الإعلان أو اقفل الإفصاح.`;
+        if (msg) {
+          errBox.textContent = msg;
+          errBox.hidden = false;
+          $('#p-tiktok').scrollIntoView({ behavior: 'smooth', block: 'center' });
+          return;
+        }
+      }
+    }
     if (times.length > 1 && !(await askConfirm(`هيتعمل ${times.length} منشور مجدول. تمام؟`))) return;
     const payload = {
       client_id: Number(clientSel.value),
@@ -1688,6 +1794,7 @@ async function renderCompose(main, params) {
       message: $('#p-message').value,
       media: media.map((m) => ({ type: m.type, url: m.url })),
       formats: { facebook: getFormats('facebook'), instagram: getFormats('instagram') },
+      tiktok: Object.fromEntries(ttPicked().map((i) => [i.value, ttOpts[i.value] || {}])),
       link: $('#p-link').value.trim() || null,
       mode: m === 'repeat' || m === 'dates' ? 'schedule' : m,
       scheduled_times: times,
@@ -1695,7 +1802,7 @@ async function renderCompose(main, params) {
     submitBtn.disabled = true;
     try {
       const post = await api(isEdit ? `/posts/${editId}` : '/posts', { method: isEdit ? 'PUT' : 'POST', body: payload });
-      if (m === 'now') toast(publishMsg(post.status));
+      if (m === 'now') toast(publishMsg(post.status) + (ttPicked().length ? ' — تيك توك بياخد كام دقيقة يجهّز الفيديو.' : ''));
       else if (m === 'draft') toast('اتحفظ كمسودة');
       else if (isEdit) toast('التعديل اتحفظ');
       else toast(post.created > 1 ? `اتجدول ${post.created} منشور` : 'اتجدول بنجاح');

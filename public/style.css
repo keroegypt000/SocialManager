@@ -577,3 +577,28 @@ a.top-post[href]:hover { border-color: var(--primary); }
 .acc-menu .btn { justify-content: flex-start; text-align: start; }
 .client-foot { display: flex; gap: 8px; flex-wrap: wrap; margin-top: auto; }
 .grid.clients > *, .client-card, .plat-list, .plat-row, .acc-row { min-width: 0; }
+
+/* Composer: TikTok posting panel */
+#p-tiktok { margin-top: 10px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; display: grid; gap: 10px; }
+#p-tiktok > label { margin: 0; }
+.tt-card { border: 1px solid var(--border); border-radius: 10px; padding: 10px; display: grid; gap: 8px; }
+.tt-head { display: flex; align-items: center; gap: 10px; }
+.tt-head img, .tt-head .acc-ph { width: 40px; height: 40px; border-radius: 50%; object-fit: cover; flex: none; }
+.tt-head > div { min-width: 0; flex: 1; }
+.tt-head b { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tt-badge { font-size: 12px; font-weight: 700; padding: 2px 8px; border-radius: 999px; background: #111; color: #fff; }
+.tt-label { margin: 0; font-weight: 600; }
+.tt-card small { color: var(--muted, #888); font-weight: 400; }
+.tt-card select.tt-need { border-color: #f59e0b; box-shadow: 0 0 0 2px rgba(245,158,11,.2); }
+.tt-allow { display: flex; flex-wrap: wrap; gap: 8px; }
+.tt-allow label { margin: 0; cursor: pointer; font-weight: 400; }
+.tt-allow input { position: absolute; opacity: 0; pointer-events: none; }
+.tt-allow span { display: block; padding: 6px 12px; border: 1px solid var(--border); border-radius: 999px; white-space: nowrap; }
+.tt-allow input:checked + span { background: var(--primary); border-color: var(--primary); color: #fff; }
+.tt-allow input:checked + span small { color: inherit; opacity: .85; }
+.tt-allow input:disabled + span { opacity: .4; cursor: not-allowed; text-decoration: line-through; }
+.tt-allow input:focus-visible + span { outline: 2px solid var(--primary); outline-offset: 2px; }
+.tt-switch, .tt-check { display: flex; align-items: flex-start; gap: 8px; margin: 0; font-weight: 400; cursor: pointer; }
+.tt-switch input, .tt-check input { margin-top: 3px; flex: none; }
+.tt-disclose { display: grid; gap: 8px; padding: 8px 10px; border-radius: 8px; background: var(--bg); }
+.tt-consent { color: var(--muted, #666); line-height: 1.6; }

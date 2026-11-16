@@ -5,7 +5,7 @@ import { startVideo, putChunk, finishVideo, videoExists, MediaError } from './me
 import { createInvite, revokeInvites } from './invite.js';
 import { buildReport, createReportLink, clientForReportLink } from './reports.js';
 import { adsOverview, setObjectStatus, setBudget, campaignDetails, pagePosts, boostPost, AdsError } from './ads.js';
-import { providersStatus } from './providers.js';
+import { providersStatus, tiktokCreator } from './providers.js';
 import { whatsappLink, whatsappUnlink, WhatsAppError, GATEWAY, getWaLimit, setWaLimit, checkWaLimit, getWaSettings, setWaMediaOnly } from './whatsapp.js';
 import { syncFromSaved, syncStatus, ignoreKeys, clearIgnored } from './sync.js';
 import { publishPost, finalizePost } from './publisher.js';
@@ -114,6 +114,23 @@ async function readPostInput(env, b, { single = false, postId = 0 } = {}) {
     if (formats[p].includes('reel') && !hasVideo) bad(`ريلز ${NAMES[p]} محتاج فيديو. دوس "🎬 ريلز" تاني وهيعمل فيديو من الصور.`);
     if (formats[p].includes('story') && !media.length) bad(`ستوري ${NAMES[p]} محتاج صورة أو فيديو.`);
   }
+  // TikTok panel: per account, who can see it (no default allowed), interactions, disclosure.
+  const ttAccounts = owned.results.filter((a) => a.platform === 'tiktok');
+  if (ttAccounts.length) {
+    const PRIV = ['PUBLIC_TO_EVERYONE', 'MUTUAL_FOLLOW_FRIENDS', 'FOLLOWER_OF_CREATOR', 'SELF_ONLY'];
+    formats.tiktok_opts = {};
+    for (const a of ttAccounts) {
+      const o = b.tiktok?.[a.id] || {};
+      const privacy = PRIV.includes(o.privacy) ? o.privacy : null;
+      if (!privacy && mode !== 'draft') bad(`تيك توك (${a.name}): اختار مين يشوف الفيديو.`);
+      if (o.disclose && !o.brand_organic && !o.brand_content) bad(`تيك توك (${a.name}): اختار نوع المحتوى الإعلاني (علامتك التجارية أو محتوى مدفوع)، أو اقفل الإفصاح.`);
+      if (o.disclose && o.brand_content && privacy === 'SELF_ONLY') bad(`تيك توك (${a.name}): المحتوى المدفوع مينفعش يبقى "أنا بس".`);
+      formats.tiktok_opts[a.id] = {
+        privacy, comment: !!o.comment, duet: !!o.duet, stitch: !!o.stitch,
+        brand_organic: !!(o.disclose && o.brand_organic), brand_content: !!(o.disclose && o.brand_content),
+      };
+    }
+  }
   const reelPicked = ['facebook', 'instagram'].some((p) => picked.has(p) && formats[p].includes('reel'));
   if (hasVideo && imageUrl && !reelPicked && !picked.has('youtube') && !picked.has('tiktok')) {
     bad('ضفت صور وفيديو مع بعض، والفيديو بينزل كـ ريلز بس. علّم "🎬 ريلز" أو شيل الفيديو.');
@@ -212,6 +229,14 @@ async function route(req, env, url) {
       db.prepare(`${POST_SELECT} WHERE p.status = 'scheduled' AND ${scope('p.client_id')} ORDER BY p.scheduled_at LIMIT 6`),
     ]);
     return json({ ...counts.results[0], upcoming: upcoming.results.map(parsePost) });
+  }
+
+  // TikTok posting panel: the account's creator info (name, avatar, privacy choices...).
+  const ttc = path.match(/^\/tiktok\/creator\/(\d+)$/);
+  if (ttc && method === 'GET') {
+    const acc = await db.prepare(`SELECT id, external_id, token_enc FROM accounts WHERE id = ? AND platform = 'tiktok' AND ${scope('client_id')}`).bind(Number(ttc[1])).first();
+    if (!acc) throw new HttpError(404, 'حساب تيك توك مش موجود');
+    try { return json(await tiktokCreator(env, acc)); } catch (err) { bad(err.message); }
   }
 
   // Clients

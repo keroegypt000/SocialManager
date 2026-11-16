@@ -236,6 +236,24 @@ async function tiktokCall(env, token, path, body) {
   return jsonOrThrow(res, 'TikTok');
 }
 
+// What the composer's TikTok panel shows: who posts, which privacy choices the account
+// allows, which interactions it turned off, and the longest video it accepts.
+export async function tiktokCreator(env, acc) {
+  const token = await freshToken(env, acc, 'tiktok');
+  const d = (await tiktokCall(env, token, '/v2/post/publish/creator_info/query/', {})).data || {};
+  return {
+    nickname: d.creator_nickname || '', username: d.creator_username || '', avatar: d.creator_avatar_url || '',
+    privacy_options: d.privacy_level_options || [],
+    comment_disabled: !!d.comment_disabled, duet_disabled: !!d.duet_disabled, stitch_disabled: !!d.stitch_disabled,
+    max_duration: d.max_video_post_duration_sec || null,
+  };
+}
+
+// The choices made in the composer's TikTok panel for one account (null = none made).
+export function tiktokOptions(post, accountId) {
+  try { return JSON.parse(post.formats || '{}')?.tiktok_opts?.[accountId] || null; } catch { return null; }
+}
+
 // TikTok: upload our video in chunks, then the cron job checks until it's published.
 async function publishTikTok(env, acc, post, media) {
   const video = media.find((m) => m.type === 'video');
@@ -243,27 +261,39 @@ async function publishTikTok(env, acc, post, media) {
   const file = await openVideo(env, video.url);
   if (!file) throw new Error('تيك توك بيقبل فيديو مرفوع على المنصة بس.');
   const token = await freshToken(env, acc, 'tiktok');
-  // Before TikTok approves the app, Direct Post only works on private accounts. So until
-  // then (TIKTOK_AUDITED not set) the video goes to the account's TikTok drafts/inbox:
-  // the owner gets a notification, adds the caption and taps Post in the app.
-  const audited = String(env.TIKTOK_AUDITED || '').trim() === '1';
   const MB = 1024 * 1024;
   const chunkSize = file.size <= 64 * MB ? file.size : 20 * MB;
   const count = file.size <= 64 * MB ? 1 : Math.floor(file.size / chunkSize);
   const source = { source: 'FILE_UPLOAD', video_size: file.size, chunk_size: chunkSize, total_chunk_count: count };
-  if (!audited) {
+  // The video goes to the account's TikTok drafts/inbox (the owner adds the caption and
+  // taps Post in the app) when nobody picked who can see it in the composer (TikTok forbids
+  // a default), or while the app isn't reviewed yet and the account is public.
+  const toInbox = async () => {
     const init = await tiktokCall(env, token, '/v2/post/publish/inbox/video/init/', { source_info: source });
     await uploadTikTokChunks(file, init.data?.upload_url, chunkSize, count);
     return { pending: `tiktok:${init.data.publish_id}` };
+  };
+  const opts = tiktokOptions(post, acc.id);
+  if (!opts?.privacy) return toInbox();
+  const creator = (await tiktokCall(env, token, '/v2/post/publish/creator_info/query/', {})).data || {};
+  if (!(creator.privacy_level_options || []).includes(opts.privacy)) {
+    throw new Error('TikTok: اختيار "مين يشوف الفيديو" مبقاش متاح للحساب ده. افتح المنشور واختار تاني.');
   }
-  const creator = await tiktokCall(env, token, '/v2/post/publish/creator_info/query/', {});
-  const options = creator.data?.privacy_level_options || [];
-  const privacy = options.includes('PUBLIC_TO_EVERYONE') ? 'PUBLIC_TO_EVERYONE' : options[0] || 'SELF_ONLY';
-  // TikTok chunks: 5-64 MB each, the last one may be bigger; small files go in one piece.
-  const init = await tiktokCall(env, token, '/v2/post/publish/video/init/', {
-    post_info: { title: String(post.message || '').slice(0, 2200), privacy_level: privacy, disable_comment: false, disable_duet: false, disable_stitch: false },
-    source_info: source,
-  });
+  const info = {
+    title: String(post.message || '').slice(0, 2200), privacy_level: opts.privacy,
+    disable_comment: !opts.comment || !!creator.comment_disabled,
+    disable_duet: !opts.duet || !!creator.duet_disabled,
+    disable_stitch: !opts.stitch || !!creator.stitch_disabled,
+    brand_organic_toggle: !!opts.brand_organic, brand_content_toggle: !!opts.brand_content,
+  };
+  let init;
+  try {
+    init = await tiktokCall(env, token, '/v2/post/publish/video/init/', { post_info: info, source_info: source });
+  } catch (err) {
+    // Before TikTok's review, Direct Post only works for private accounts.
+    if (/unaudited_client_can_only_post_to_private_accounts/.test(err.message)) return toInbox();
+    throw err;
+  }
   await uploadTikTokChunks(file, init.data?.upload_url, chunkSize, count);
   return { pending: `tiktok:${init.data.publish_id}` };
 }

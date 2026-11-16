@@ -54,6 +54,9 @@ export async function authorize(env, user, req, path, method) {
     return;
   }
 
+  // TikTok's posting panel reads the account's creator info.
+  if ((m = path.match(/^\/tiktok\/creator\/(\d+)$/))) { need('posts'); return needAccount(m[1]); }
+
   // Uploading images/videos is part of posting.
   if (path === '/media' || path.startsWith('/media/')) return need('posts');
 
